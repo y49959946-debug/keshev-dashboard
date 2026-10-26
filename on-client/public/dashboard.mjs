@@ -24,9 +24,11 @@ const ACCESS_TEXT = { allowed: '허용됨', denied: '거부됨', unknown: '확�
 const DEVICE_TEXT = { compliant: '기준 충족', noncompliant: '기준 미충족', unknown: '확인 불가' };
 const SESSION_TEXT = { active: '활성', expired: '만료', revoked: '회수됨', unknown: '확인 불가' };
 const DECISION_TEXT = { allow: '허용', deny: '차단', challenge: '추가 확인 필요', unknown: '판정 불명' };
-const PATH_LABELS = { me: '로그인 정보', apps: '업무 앱', events: '보안 기록', devices: '기기', sessions: '세션', diagnostics: '도움정보', pcStatus: '내 PC 상태' };
-const PATHS = { me: '/api/me', apps: '/api/apps', events: '/api/events', devices: '/api/devices', sessions: '/api/sessions', diagnostics: '/api/diagnostics', pcStatus: '/api/pc-status' };
-const MEASURE_ORDER = ['me', 'devices', 'sessions', 'apps', 'events', 'pcStatus', 'diagnostics'];
+const PATH_LABELS = { me: '로그인 정보', apps: '업무 앱', events: '보안 기록', devices: '기기', sessions: '세션', diagnostics: '도움정보', pcStatus: '내 PC 상태', pcSecurity: '이 PC 보안 구성' };
+const PATHS = { me: '/api/me', apps: '/api/apps', events: '/api/events', devices: '/api/devices', sessions: '/api/sessions', diagnostics: '/api/diagnostics', pcStatus: '/api/pc-status', pcSecurity: '/api/pc-security' };
+const MEASURE_ORDER = ['me', 'devices', 'sessions', 'apps', 'events', 'pcStatus', 'pcSecurity', 'diagnostics'];
+// 카드 ① 의 SDP 엔진 연결 문구. 「이 PC 조회」(내 PC 상태·보안 구성)와 섞지 않는다.
+const SDP_TEXT = { connected: 'SDP 연결됨(connected)', demo: 'SDP 아님 · 예제 엔진(demo) · 실제 연결 아님', disconnected: 'SDP 미연결(disconnected)' };
 const AI_PHASE_TEXT = {
   idle: '시작 전', cancelled: '취소됨', starting: '시작하는 중', awaiting_approval: '승인 대기', finishing: '연결 확인 중',
   checking: '확인 중', cancelling: '취소하는 중', connected: '연결됨(17단계 절차 결과)', error: '실패', unknown: '확인 불가',
@@ -150,7 +152,7 @@ function engineCard(snap) {
   else if (modes.size > 1) { engineValue = `응답마다 다름(${[...modes].join(', ')}) · 확인 불가`; engineSource = 'unverified'; }
   else {
     const mode = [...modes][0];
-    engineValue = MODE_TEXT[mode] || MODE_TEXT.unknown;
+    engineValue = SDP_TEXT[mode] || 'SDP 연결 확인 불가(unknown)';
     engineSource = { connected: 'server', demo: 'demo', disconnected: 'disconnected' }[mode] || 'unverified';
   }
 
@@ -161,9 +163,10 @@ function engineCard(snap) {
 
   return card('① 앱·엔진 연결 상태', 'dash-card-engine', [
     { name: '로컬 서버', value: serverValue, source: serverSource, testid: 'dash-local-server' },
-    { name: '엔진 모드', value: engineValue, source: engineSource, testid: 'dash-engine-mode' },
+    { name: 'SDP 엔진 연결', value: engineValue, source: engineSource, testid: 'dash-engine-mode' },
     { name: '도움정보 코드', value: diagValue, source: diagSource, testid: 'dash-engine-code' },
-  ], ['엔진 모드는 서버가 응답 meta.mode 로 알려 준 값입니다.']);
+  ], ['SDP 엔진 연결은 서버가 응답 meta.mode 로 알려 준 값입니다.',
+    '아래 「내 PC 상태」「이 PC 보안 구성」은 SDP 연결과 별개인 이 PC 조회(실측)입니다.']);
 }
 
 function identityCard(snap) {
@@ -469,10 +472,203 @@ function pcPanel(snap, actions) {
   ]);
 }
 
+// ---------- 이 PC 보안 구성(읽기 전용·실측) — 학생 구현 ----------
+// 버튼을 누를 때만 읽는다. SDP 연결과 상관없는 이 PC 조회이며, 예제 모드에서도 실측이다.
+
+const PROFILE_TEXT = { Domain: '도메인', Private: '개인', Public: '공용' };
+const ENABLED_TEXT = { True: '사용(True)', False: '사용 안 함(False)' };
+const ACTION_TEXT = { Block: '차단(Block)', Allow: '허용(Allow)', NotConfigured: '설정 없음(NotConfigured)' };
+const LINK_TEXT = { Up: '연결됨(Up)', Disconnected: '끊김(Disconnected)', Disabled: '사용 안 함(Disabled)', NotPresent: '장치 없음(NotPresent)' };
+const LEVELS = [
+  { key: 'critical', name: '위험(1)' },
+  { key: 'error', name: '오류(2)' },
+  { key: 'warning', name: '경고(3)' },
+];
+const LOGS = [{ key: 'system', name: 'System' }, { key: 'application', name: 'Application' }];
+
+const metricSource = (m) => (m && m.status === 'ok' ? 'measured' : 'unverified');
+
+function secMetricHead(title, m, how) {
+  return [
+    el('div', { className: 'dash-card-head' }, [el('h4', { text: title }), badge(metricSource(m))]),
+    el('p', { className: 'dash-note', text: `잰 시각 ${formatTime(m.measuredAt)} · 단위 ${m.unit} · 출처 ${m.source} · ${how}` }),
+    m.status === 'ok' ? null : el('p', { className: 'dash-empty', 'data-source': 'unverified', text: `확인 불가 · ${m.reason}` }),
+  ];
+}
+
+function table(headers, rows) {
+  return el('div', { className: 'dash-table-wrap' }, el('table', { className: 'dash-measure-table' }, [
+    el('thead', {}, el('tr', {}, headers.map((h) => el('th', { scope: 'col', text: h })))),
+    el('tbody', {}, rows.map((cells) => el('tr', {}, cells.map((c, i) => (i === 0 ? el('th', { scope: 'row', text: c }) : el('td', { text: c })))))),
+  ]));
+}
+
+function secNetwork(n) {
+  const ifs = n.interfaces.status === 'ok' ? n.interfaces.value : [];
+  const adapters = n.adapters.status === 'ok' ? n.adapters.value : null;
+  const names = [...new Set([...ifs.map((i) => i.name), ...(adapters ?? []).map((a) => a.name)])];
+  const rows = names.map((name) => {
+    const i = ifs.find((x) => x.name === name);
+    const a = adapters ? adapters.find((x) => x.name === name) : null;
+    const v4 = i ? i.addresses.filter((x) => x.family === 'IPv4').map((x) => x.cidr || x.address).join(', ') : '';
+    const v6 = i ? i.addresses.filter((x) => x.family === 'IPv6').map((x) => x.cidr || x.address).join(', ') : '';
+    const status = !adapters ? '확인 불가' : a ? (LINK_TEXT[a.status] || `${a.status || '값 없음'}`) : i && i.internal ? '해당 없음(loopback)' : '상태 정보 없음';
+    const mac = !adapters ? '확인 불가' : a ? (a.mac || '없음') : '해당 없음';
+    return [name, status, v4 || (n.interfaces.status === 'ok' ? '없음' : '확인 불가'), v6 || (n.interfaces.status === 'ok' ? '없음' : '확인 불가'),
+      i ? (i.internal ? '예(loopback)' : '아니오') : '확인 불가', mac];
+  });
+  const gw = n.gateways;
+  const dnsM = n.dns;
+  return el('section', { className: 'dash-sec-group', testid: 'dash-sec-network', 'aria-label': '네트워크 구성' }, [
+    el('h3', { text: '네트워크 구성' }),
+    ...secMetricHead('어댑터 주소', n.interfaces, 'node:os networkInterfaces()'),
+    ...secMetricHead('어댑터 연결 상태·MAC', n.adapters, 'Get-NetAdapter (MAC 은 뒤 두 묶음만 표시)'),
+    rows.length ? table(['어댑터', '연결 상태', 'IPv4', 'IPv6', '내부(loopback)', 'MAC(가림)'], rows) : null,
+    ...secMetricHead('기본 게이트웨이', gw, 'Get-NetRoute 기본 경로(0.0.0.0/0, ::/0)'),
+    gw.status === 'ok' ? el('p', { testid: 'dash-sec-gateways', text: gw.value.length === 0 ? '기본 게이트웨이 0개(기본 경로 없음)'
+      : gw.value.map((g) => `${g.family} ${g.nextHop} · ${g.adapter}${g.metric !== null ? ` · metric ${g.metric}` : ''}`).join(' / ') }) : null,
+    ...secMetricHead('DNS 서버', dnsM, 'node:dns getServers()'),
+    dnsM.status === 'ok' ? el('p', { testid: 'dash-sec-dns', text: dnsM.value.length === 0 ? 'DNS 서버 0개' : `${dnsM.value.length}개 · ${dnsM.value.join(', ')}` }) : null,
+  ]);
+}
+
+function secFirewall(f) {
+  const p = f.profiles;
+  return el('section', { className: 'dash-sec-group', testid: 'dash-sec-firewall', 'aria-label': '방화벽' }, [
+    el('h3', { text: '방화벽 (현재 적용 값)' }),
+    ...secMetricHead('프로필별 설정', p, 'Get-NetFirewallProfile -PolicyStore ActiveStore'),
+    p.status === 'ok' ? table(['프로필', '사용', '들어오는 기본 동작', '나가는 기본 동작'], p.value.map((x) => [
+      `${PROFILE_TEXT[x.name] || x.name}(${x.name})`,
+      ENABLED_TEXT[x.enabled] || `확인 불가(값: ${x.enabled || '없음'})`,
+      ACTION_TEXT[x.inbound] || `확인 불가(값: ${x.inbound || '없음'})`,
+      ACTION_TEXT[x.outbound] || `확인 불가(값: ${x.outbound || '없음'})`,
+    ])) : null,
+    el('p', { className: 'dash-note', text: '현재 적용 값(ActiveStore)입니다. 그룹 정책·보안 프로그램이 바꿀 수 있으며, 이 화면은 설정을 바꾸지 않습니다.' }),
+  ]);
+}
+
+function hourLabel(start, i) {
+  const t = Date.parse(start);
+  if (!Number.isFinite(t)) return `${i}번째 시간`;
+  return new Date(t + i * 3600000).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function secEvents(e) {
+  const okLogs = LOGS.filter((l) => e[l.key].status === 'ok');
+  const start = e.range.start;
+  const blocks = LOGS.map((l) => {
+    const m = e[l.key];
+    const v = m.status === 'ok' ? m.value : null;
+    return el('div', { className: 'dash-sec-log', testid: `dash-sec-${l.key}` }, [
+      ...secMetricHead(`${l.name} 기록`, m, 'Get-WinEvent 건수만(메시지 본문 없음)'),
+      v ? el('p', { className: 'dash-pc-now', testid: `dash-sec-${l.key}-counts`, text: `위험(1) ${v.critical}건 · 오류(2) ${v.error}건 · 경고(3) ${v.warning}건` }) : null,
+      v && v.truncated ? el('p', { className: 'dash-note', text: `${v.maxEvents}건 이상이라 앞의 ${v.maxEvents}건만 셌습니다(잘림).` }) : null,
+      v ? el('p', { className: 'dash-note', text: v.providers.length === 0 ? '많이 나온 원본: 없음'
+        : `많이 나온 원본(ProviderName) 상위 ${v.providers.length}개: ${v.providers.map((p) => `${p.name} ${p.count}건`).join(', ')}` }) : null,
+    ]);
+  });
+
+  let chart = null;
+  if (okLogs.length > 0) {
+    const sums = Array.from({ length: 24 }, (_, i) => {
+      const s = { critical: 0, error: 0, warning: 0 };
+      for (const l of okLogs) for (const lv of LEVELS) s[lv.key] += e[l.key].value.hourly[i][lv.key];
+      return s;
+    });
+    const max = Math.max(1, ...sums.map((s) => s.critical + s.error + s.warning));
+    const which = okLogs.map((l) => l.name).join('+');
+    chart = el('div', {}, [
+      el('p', { className: 'dash-note', text: `최근 24시간 1시간 단위 건수 · ${which}${okLogs.length < LOGS.length ? ` (${LOGS.filter((l) => !okLogs.includes(l)).map((l) => l.name).join(', ')} 는 확인 불가라 막대에서 뺐습니다)` : ''}` }),
+      el('ul', { className: 'sec-legend', 'aria-label': '막대 범례' }, LEVELS.map((lv) => el('li', {}, [el('span', { className: `sec-swatch sec-${lv.key}`, 'aria-hidden': 'true' }), lv.name]))),
+      el('ol', { className: 'trend sec-trend', testid: 'dash-sec-trend', 'aria-label': `시간대별 Windows 기록 위험·오류·경고 건수(${which})` }, sums.map((s, i) => {
+        const label = `${hourLabel(start, i)}부터 1시간 · 위험 ${s.critical}건 · 오류 ${s.error}건 · 경고 ${s.warning}건`;
+        const track = el('span', { className: 'trend-track sec-track', 'aria-hidden': 'true' });
+        for (const lv of LEVELS) {
+          if (s[lv.key] === 0) continue;
+          const seg = el('span', { className: `sec-seg sec-${lv.key}` });
+          seg.style.height = `${(s[lv.key] / max) * 100}%`;
+          track.append(seg);
+        }
+        const total = s.critical + s.error + s.warning;
+        return el('li', { className: 'trend-col', title: label }, [
+          el('span', { className: 'trend-count', 'aria-hidden': 'true', text: total > 0 ? String(total) : '' }),
+          track,
+          el('span', { className: 'trend-hour', 'aria-hidden': 'true', text: i % 6 === 0 ? hourLabel(start, i) : '' }),
+          el('span', { className: 'sr-only', text: label }),
+        ]);
+      })),
+      el('details', { className: 'dash-table' }, [
+        el('summary', { text: '표로 보기' }),
+        table(['시작 시각', ...LOGS.flatMap((l) => LEVELS.map((lv) => `${l.name} ${lv.name}`))],
+          Array.from({ length: 24 }, (_, i) => [hourLabel(start, i), ...LOGS.flatMap((l) => LEVELS.map((lv) => (e[l.key].status === 'ok' ? String(e[l.key].value.hourly[i][lv.key]) : '확인 불가')))])),
+      ]),
+    ]);
+  } else {
+    chart = el('p', { className: 'dash-empty', 'data-source': 'unverified', text: '두 기록 모두 확인 불가라 막대를 그리지 않습니다.' });
+  }
+
+  return el('section', { className: 'dash-sec-group', testid: 'dash-sec-events', 'aria-label': 'Windows 기록' }, [
+    el('h3', { text: 'Windows 기록 (최근 24시간 · System·Application)' }),
+    el('p', { className: 'dash-sec-warning', testid: 'dash-sec-disclaimer', text: '이 건수는 Windows 기록의 경고·오류 개수일 뿐이며, 침해나 공격 탐지 결과가 아닙니다.' }),
+    el('p', { className: 'dash-note', text: `범위 ${formatTime(e.range.start)} ~ ${formatTime(e.range.end)} (24시간) · 위험(1)·오류(2)·경고(3)는 따로 센 값 · Security 기록은 읽지 않습니다.` }),
+    el('div', { className: 'dash-sec-logs' }, blocks),
+    chart,
+  ]);
+}
+
+function secBody(data) {
+  return el('div', { className: 'dash-sec-grid' }, [secNetwork(data.network), secFirewall(data.firewall), secEvents(data.events)]);
+}
+
+function secSourceOf(d) {
+  const ms = [d.network.interfaces, d.network.dns, d.network.adapters, d.network.gateways, d.firewall.profiles, d.events.system, d.events.application];
+  return combine(ms.map(metricSource));
+}
+
+function secPanel(snap, actions) {
+  const sec = snap.pcSecurity;
+  const loading = !!sec && sec.status === 'loading';
+  const previous = sec && sec.previous && sec.previous.status === 'ok' ? sec.previous : null;
+  const button = el('button', { type: 'button', className: 'btn', testid: 'dash-sec-read', 'aria-disabled': loading ? 'true' : null,
+    text: loading ? '읽는 중…' : '이 PC 보안 구성 읽기' });
+  button.addEventListener('click', () => {
+    if (!loading && actions && typeof actions.onPcSecurityRead === 'function') actions.onPcSecurityRead();
+  });
+
+  let source; const body = [];
+  if (!sec || sec.status === 'idle') {
+    source = 'pending';
+    body.push(el('p', { className: 'dash-empty', testid: 'dash-sec-state', text: '아직 읽지 않음 · 「이 PC 보안 구성 읽기」를 누르면 읽습니다(몇 초 걸릴 수 있습니다).' }));
+  } else if (sec.status === 'ok') {
+    source = secSourceOf(sec.data);
+    body.push(el('p', { className: 'dash-note', testid: 'dash-sec-measured-at', text: `읽은 시각 ${formatTime(sec.data.measuredAt)}` }), secBody(sec.data));
+  } else {
+    source = loading ? 'loading' : sourceOf(sec) === 'disconnected' ? 'disconnected' : 'unverified';
+    body.push(el('p', { className: 'dash-empty', 'data-source': source, testid: 'dash-sec-state', text: loading
+      ? '읽는 중… PowerShell 읽기 명령 3개를 실행합니다(각 10초 제한).'
+      : `이번 읽기 결과 없음 · ${errorText({ ...sec, meta: { mode: source === 'disconnected' ? 'disconnected' : 'unknown' } })}` }));
+    if (previous) {
+      body.push(el('p', { className: 'dash-note', testid: 'dash-sec-previous', text: `아래는 이전 결과입니다(읽은 시각 ${formatTime(previous.data.measuredAt)}). 지금 값이 아닙니다.` }),
+        el('div', { className: 'dash-sec-previous' }, secBody(previous.data)));
+    }
+  }
+
+  return el('section', { className: 'dash-panel dash-sec', testid: 'dash-sec-panel', 'data-source': source, 'aria-label': '이 PC 보안 구성(읽기 전용·실측)' }, [
+    el('div', { className: 'dash-card-head' }, [el('h2', { text: '이 PC 보안 구성(읽기 전용·실측)' }), badge(source, 'dash-sec-panel-source')]),
+    el('p', { className: 'dash-note', text: '이 PC 에서 일반 사용자 권한의 읽기 명령으로만 읽습니다. 설정을 바꾸지 않고, 관리자 권한을 요청하지 않습니다. 권한이 없어 못 읽은 값은 「확인 불가」와 이유로 표시합니다.' }),
+    el('p', { className: 'dash-note', text: 'SDP 연결과 상관없는 「이 PC 조회」입니다. 예제 모드에서도 예시 값이 아니라 실측입니다. 읽은 값은 저장하거나 외부로 보내지 않고 이 화면에만 보여 줍니다.' }),
+    el('div', { className: 'row' }, button),
+    ...body,
+  ]);
+}
+
+const REFOCUS_IDS = ['dash-pc-refresh', 'dash-sec-read'];
+
 export function renderDashboard(target, snap, actions = {}) {
-  // 다시 그려도 「새로 재기」 버튼의 키보드 포커스를 유지한다.
+  // 다시 그려도 패널 버튼의 키보드 포커스를 유지한다.
   const active = typeof document !== 'undefined' ? document.activeElement : null;
-  const refocus = !!active && target.contains && target.contains(active) && active.dataset && active.dataset.testid === 'dash-pc-refresh';
+  const refocusId = active && target.contains && target.contains(active) && active.dataset && REFOCUS_IDS.includes(active.dataset.testid) ? active.dataset.testid : null;
+  const refocus = refocusId !== null;
   target.replaceChildren(
     el('p', { className: 'dash-refresh', testid: 'dash-refresh-state', text: snap.refreshing
       ? '다시 불러오는 중… 값이 하나씩 바뀝니다.'
@@ -481,10 +677,11 @@ export function renderDashboard(target, snap, actions = {}) {
     el('div', { className: 'dash-cards' }, [engineCard(snap), identityCard(snap), appsCard(snap), aiCard(snap)]),
     el('div', { className: 'dash-lower' }, [trendPanel(snap), recentPanel(snap)]),
     pcPanel(snap, actions),
+    secPanel(snap, actions),
     measuredPanel(snap),
   );
   if (refocus) {
-    const button = target.querySelector('[data-testid="dash-pc-refresh"]');
+    const button = target.querySelector(`[data-testid="${refocusId}"]`);
     if (button) button.focus();
   }
 }

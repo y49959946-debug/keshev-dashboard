@@ -139,3 +139,104 @@ npm run check
 3. 1분 이상 기다린 뒤 다시 재기 → 표본 4개 안팎으로 평균·최고·최저·비교 문구와 막대가 보입니다.
 4. `-Demo`로 다시 실행 → 다른 카드는 「예시 값」이지만, 이 패널은 계속 「실측」입니다.
 5. 기존 「보호 현황」「업무 앱」「보안 기록」 화면과 학생 함수 표시가 그대로인지 확인합니다.
+
+---
+
+# 이 PC 보안 구성(읽기 전용·실측) — 학생 구현
+
+관제 대시보드의 「내 PC 상태(실측)」 아래에 있는 패널입니다. 네트워크 구성, 방화벽 현재 적용 값, 최근 24시간 Windows 기록(System·Application)의 위험·오류·경고 건수를 보여 줍니다.
+
+> 이 건수는 Windows 기록의 경고·오류 개수일 뿐이며, 침해나 공격 탐지 결과가 아닙니다.
+
+## 제공 기능과 학생 구현
+
+시작 틀 0.2.11과 이 저장소(커밋 ccb1dc4 시점)에는 네트워크·방화벽·Windows 기록을 읽는 제공 기능이 없습니다.
+
+| 구분 | 내용 |
+|---|---|
+| 제공 기능(시작 틀) | 서버 틀(`createOnServer`, Host 검사, `{ ok, data, meta }`, `bounded()`), `request()`, 기존 세 화면 |
+| 학생 구현(이번에 새로 만듦) | `src/pc-security.mjs` 전체, `src/server.mjs`의 `/api/pc-security` 경로(3곳), `public/app.js`의 `loadPcSecurity`·`validPcSecurity`, `public/dashboard.mjs`의 패널과 카드 ① 문구, `public/style.css`의 해당 스타일 |
+
+## 읽는 방법 (모두 읽기 전용, 일반 사용자 권한)
+
+| 묶음 | 값 | 방법 |
+|---|---|---|
+| 네트워크 | 어댑터 이름, IPv4/IPv6 주소, 내부(loopback) 여부 | `node:os` `networkInterfaces()`(MAC 은 여기서 쓰지 않음) |
+| 네트워크 | 어댑터 연결 상태, MAC(가림) | `Get-NetAdapter`. MAC 은 PowerShell 안에서 뒤 두 묶음만 남기고 가린 뒤 넘김(예: `XX-XX-XX-XX-2E-FD`) |
+| 네트워크 | 기본 게이트웨이 | `Get-NetRoute -AddressFamily IPv4,IPv6 \| Where-Object` 기본 경로(0.0.0.0/0, ::/0) |
+| 네트워크 | DNS 서버 | `node:dns` `getServers()` |
+| 방화벽 | 프로필(도메인·개인·공용)별 사용 여부, 들어오는/나가는 기본 동작 | `Get-NetFirewallProfile -PolicyStore ActiveStore` |
+| Windows 기록 | System·Application 최근 24시간 위험(1)·오류(2)·경고(3) 건수, 1시간 단위 24칸, 많이 나온 원본(ProviderName) 상위 5개 | `Get-WinEvent -FilterHashtable @{LogName; Level=1,2,3; StartTime} -MaxEvents 10000`. 메시지 본문은 넘기지 않음 |
+
+- **방화벽은 현재 적용 값(ActiveStore)입니다.** 기본 저장소(PersistentStore)에서는 들어오는/나가는 동작이 `NotConfigured`로만 보였습니다. 이 값은 그룹 정책, 회사 관리 도구, 다른 보안 프로그램이 바꿀 수 있으므로 읽은 시점의 값일 뿐입니다.
+- 위험(1)·오류(2)·경고(3)는 각각 따로 셉니다. 0건이면 Windows가 `NoMatchingEventsFound`를 내는데, 이것만 0건으로 처리합니다. 로그마다 10000건이 상한이고, 닿으면 "잘림"이라고 표시합니다.
+- Security 기록은 읽지 않습니다(관리자 권한이 필요하고 이번 범위가 아님).
+
+## PowerShell 실행 규칙
+
+- `child_process.execFile`로 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`를 직접 실행합니다(shell 없음). 인자는 `-NoProfile -NonInteractive -Command -`입니다.
+- 코드에 고정된 스크립트를 **표준 입력**으로 넘깁니다. `-EncodedCommand`(base64)는 백신이 의심 행위로 볼 수 있어 쓰지 않습니다. 요청 값은 스크립트에 넣지 않습니다.
+- 스크립트는 ASCII 문자만 씁니다(입력 코드 페이지 문제를 피함). 맨 앞에서 `$ProgressPreference='SilentlyContinue'`와 출력 UTF-8을 설정해, 한글 어댑터 이름이 깨지지 않습니다.
+- **허용 cmdlet**: `Get-NetAdapter`, `Get-NetRoute`, `Get-NetFirewallProfile`, `Get-WinEvent`, `Get-Date`, `ConvertTo-Json`, `Select-Object`, `Where-Object`, `ForEach-Object`, `Group-Object`, `Sort-Object`, `Measure-Object`.
+  - 모듈을 불러올 때 스크립트의 cmdlet, .NET 정적 호출(`Console`·`UTF8Encoding`·`Math`만 허용), 금지 단어(`Set-`·`New-`·`Remove-`·`Enable-`·`Disable-`·`Invoke-`·`netsh`·`reg`·Security 기록 등)를 검사합니다. 어긋나면 모듈이 실패해서 서버가 뜨지 않습니다.
+- PowerShell 3개(네트워크·방화벽·기록)를 동시에 실행합니다. 각각 시간 제한 10초, 출력 256KB 제한, 창 숨김입니다. 하나가 실패해도 나머지는 보여 줍니다.
+- 비밀로 보이는 환경변수는 하위 프로세스에 넘기지 않습니다(`start-alekov.ps1`과 같은 기준).
+- 읽는 중에 또 요청이 오면 같은 작업의 결과를 나눠 받습니다(PowerShell을 더 띄우지 않음).
+- 읽은 값은 서버에 저장하지 않고 응답으로만 보냅니다. 파일 저장·외부 전송은 없고, 브라우저 화면에만 남습니다.
+
+## 「확인 불가」 조건
+
+값마다 `{ status: 'ok' | 'unavailable', value, unit, measuredAt, source: '이 PC', reason? }`입니다. 못 읽은 값은 0이나 "꺼짐"으로 바꾸지 않습니다.
+
+| 상황 | 이유 표시 |
+|---|---|
+| 권한 거부(`UnauthorizedAccess`, `Access denied`, `0x80070005` 등) | 권한 부족(예외 이름) |
+| 10초 안에 끝나지 않음 | 시간 초과(10초) |
+| PowerShell 없음 | PowerShell 을 찾을 수 없습니다. |
+| 출력이 256KB를 넘음 | 출력이 너무 큽니다. |
+| JSON이 아니거나 형식이 다름 | 출력 형식을 확인할 수 없습니다. / 건수 형식을 확인할 수 없습니다. |
+| 그 밖의 실패 | 읽기 실패(예외 이름) 또는 PowerShell 종료 코드와 stderr 요약(80자 이하, 원문 전체는 싣지 않음) |
+| Windows가 아님 | Windows 가 아니라 읽을 수 없습니다. |
+
+브라우저 쪽에서는 `validPcSecurity()`가 응답 형식을 검사합니다. 맞지 않으면 패널 전체가 「확인 불가(CONTRACT_MISMATCH)」입니다. 오류는 대시보드 안에서만 보여 주고, 학생 `renderStatus` 입력에는 넣지 않습니다.
+
+## 읽는 시점과 표시
+
+- 「이 PC 보안 구성 읽기」 버튼을 누를 때만 읽습니다. 처음에는 "아직 읽지 않음"을 표시합니다. 처음 열 때, 「다시 불러오기」, 자동·주기 조회로는 읽지 않습니다.
+- 「다시 불러오기」를 눌러도 이전 결과는 읽은 시각과 함께 그대로 남습니다.
+- 다시 읽다가 실패하면 "이번 읽기 결과 없음"과 이유를 먼저 보여 줍니다. 이전 결과는 "이전 결과입니다(읽은 시각 …). 지금 값이 아닙니다."라는 문구와 함께 따로 표시합니다.
+- 값마다 출처 배지(「실측」 또는 「확인 불가」), 잰 시각, 단위(개·건), 읽은 방법을 글자로 붙입니다.
+- Windows 기록 막대는 24칸입니다. 위험·오류·경고를 쌓아 그리고, 위험은 빗금을 넣고 범례를 글자로 붙여 색만으로 구분하지 않습니다. 툴팁과 「표로 보기」도 있습니다. 확인 불가인 기록은 막대에서 빼고, 뺐다고 적습니다.
+- **「SDP 미연결」과 「이 PC 조회」를 섞지 않습니다.** 카드 ①의 "SDP 엔진 연결" 줄은 SDP 연결 상태만 보여 줍니다(기본 실행: "SDP 미연결(disconnected)", 「연결 없음」). 이 패널은 SDP와 상관없는 실측이고, `-Demo`에서도 실측입니다.
+
+## 시험 결과 (2026-10-26, 이 PC)
+
+이 세션의 계정은 **Administrators 그룹 계정이지만, 관리자 권한이 상승되지 않은 제한 토큰**(UAC 켜짐)이었습니다.
+
+| 명령 | 결과 |
+|---|---|
+| `os.networkInterfaces()`, `dns.getServers()` | 성공 |
+| `Get-NetAdapter`, `Get-NetRoute`(기본 경로) | 성공(각 0.1초 안쪽) |
+| `Get-NetRoute -DestinationPrefix ::/0` | IPv6 기본 경로가 없으면 "개체 없음" 오류 → `Where-Object`로 거르는 방식으로 바꿈 |
+| `Get-NetIPConfiguration` | 성공하지만 4초 걸려서 쓰지 않음 |
+| `Get-NetFirewallProfile -PolicyStore ActiveStore` | 성공(세 프로필 사용, 들어오는 차단·나가는 허용) |
+| `Get-WinEvent` System·Application 24시간 | 성공 |
+| 서버 `/api/pc-security`(기본·`-Demo`) | 200, 약 1.8초, 값 모두 `ok`, 출처 「이 PC」 |
+
+권한 거부가 난 항목은 없었습니다. 「권한 부족」 표시는 가짜 실행기로 오류를 흉내 낸 단위 시험으로만 확인했습니다.
+
+## 미확인
+
+- **표준 사용자 계정에서의 결과.** 이 시험은 관리자 그룹 계정의 제한 토큰으로 했습니다. 처음부터 표준 사용자인 계정, 회사 정책이 걸린 PC에서는 일부 값(특히 방화벽·기록)이 「확인 불가」로 나올 수 있습니다.
+- 실제 권한 거부 상황에서의 화면
+- 기록이 10000건을 넘는 PC에서의 시간과 잘림 표시
+- 브라우저에서 보이는 모습(막대·표·툴팁)
+
+## 확인 순서
+
+1. `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start-alekov.ps1` → 대시보드 카드 ①의 "SDP 엔진 연결"이 "SDP 미연결(disconnected)"·「연결 없음」인지 봅니다.
+2. 「이 PC 보안 구성(읽기 전용·실측)」 패널에 "아직 읽지 않음"이 보이는지 봅니다.
+3. 「이 PC 보안 구성 읽기」 → 몇 초 뒤 네트워크·방화벽·Windows 기록에 「출처: 실측」, 잰 시각, 단위가 보입니다. 기록 묶음 위에는 "탐지 결과가 아닙니다" 문구가, 아래에는 24칸 막대와 「표로 보기」가 보입니다.
+4. 「다시 불러오기」 → 이 패널의 결과와 읽은 시각은 그대로입니다. 「이 PC에서 잰 값」 표의 `/api/pc-security` 줄도 바뀌지 않습니다.
+5. `-Demo`로 다시 실행 → 카드 ①은 「예시 값」(SDP 아님·예제 엔진)이고, 이 패널을 읽으면 계속 「실측」입니다.
+6. 기존 「보호 현황」「업무 앱」「보안 기록」 화면과 학생 함수 표시가 그대로인지 봅니다.

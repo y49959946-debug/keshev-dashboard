@@ -17,6 +17,7 @@ import {createVaultOnAiService} from './ai/vault-service.mjs';
 import {createConnectionManager} from './connection/manager.mjs';
 import {createProjectScanner} from './vulnerabilities/project-scan.mjs';
 import {createPcStatusSampler} from './pc-status.mjs';
+import {createPcSecurityReader} from './pc-security.mjs';
 import {buildLocalLearnerSupportGuide,isLearnerSupportProblemKind,readLocalLearnerSupportObservation} from './learner-support/service.mjs';
 import {nativeOwn,nativePublicError} from './connection/native-login.mjs';
 import {createNativeHostContext,captureNativeHostConfiguration,readNativeHostConfiguration,openNativeHostOperation,readNativeHostOperation,assertNativeHostOperation,createNativeOperationVault,closeNativeHostOperation} from './connection/native-context.mjs';
@@ -314,6 +315,8 @@ export function createOnServer(serverOptions={}) {
   const meta=()=>({mode,checkedAt:clock().toISOString(),starterVersion:'0.1.0'});
   // 내 PC 상태(학생 구현): 서버가 듣는 동안만 15초마다 메모리에 표본을 쌓는다. 파일·외부 전송 없음.
   const pcStatus=createPcStatusSampler();
+  // 이 PC 보안 구성(학생 구현): 요청이 올 때만 읽기 전용 명령으로 읽는다. 저장·외부 전송 없음.
+  const pcSecurity=createPcSecurityReader();
   const server=http.createServer(async(req,res)=>{
     // Register before identity/events reads: disconnects during preparation must
     // cancel the later AI operation, even when an adapter ignores cancellation.
@@ -686,6 +689,9 @@ export function createOnServer(serverOptions={}) {
       }
       if(req.method==='GET'&&url.pathname==='/api/pc-status'){
         const data=await bounded(signal=>pcStatus.read({signal}));send(200,{ok:true,data});return;
+      }
+      if(req.method==='GET'&&url.pathname==='/api/pc-security'){
+        const data=await bounded(()=>pcSecurity.read());send(200,{ok:true,data});return;
       }
       if(req.method==='GET'&&url.pathname==='/api/diagnostics'){
         // 자동 호출이나 비밀 원문·전체 설정 출력 없이 로컬 연결 상태만 진단한다.

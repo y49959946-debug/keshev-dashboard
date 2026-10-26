@@ -58,6 +58,7 @@ const state = {
   vulnerabilities: { status: 'idle' },
   aiConnection: { status: 'idle' },
   pcStatus: { status: 'idle' },
+  pcSecurity: { status: 'idle' },
   selectedExplanation: { event: null, resource: { status: 'idle' } },
   errors: new Map(),
 };
@@ -1315,7 +1316,62 @@ function dashboardSnapshot() {
     aiConnection: copy(state.aiConnection),
     aiConnectPhase: aiConnect ? aiConnect.state.phase : aiConnectLoadFailed ? 'unknown' : 'idle',
     pcStatus: copy(state.pcStatus),
+    pcSecurity: copy(state.pcSecurity),
   };
+}
+
+// ---------- 이 PC 보안 구성(학생 구현, 읽기 전용) ----------
+// 「이 PC 보안 구성 읽기」를 누를 때만 부른다. 처음 열 때·「다시 불러오기」·자동 주기 조회 없음.
+// 다시 읽는 동안에도 이전 결과를 잰 시각과 함께 그대로 둔다. 오류는 trackError 에 넣지 않는다.
+function validSecMetric(m, unit, checkValue) {
+  if (!isRecord(m) || m.unit !== unit || !isTime(m.measuredAt) || m.source !== '이 PC') return false;
+  if (m.status === 'unavailable') return m.value === null && typeof m.reason === 'string' && m.reason.length > 0 && m.reason.length <= 300;
+  return m.status === 'ok' && checkValue(m.value);
+}
+const isStr = (v, max = 200) => typeof v === 'string' && v.length <= max;
+const isCount = (v) => Number.isSafeInteger(v) && v >= 0;
+const listOf = (check) => (v) => Array.isArray(v) && v.length <= 64 && v.every(check);
+const validSecInterface = (i) => isRecord(i) && isStr(i.name, 120) && typeof i.internal === 'boolean'
+  && listOf((a) => isRecord(a) && ['IPv4', 'IPv6'].includes(a.family) && isStr(a.address, 64) && isStr(a.cidr, 70) && typeof a.internal === 'boolean')(i.addresses);
+const validSecAdapter = (a) => isRecord(a) && isStr(a.name, 120) && isStr(a.description) && isStr(a.status, 40) && isStr(a.linkSpeed, 40)
+  && (a.mac === '' || /^XX-XX-XX-XX-[0-9A-F]{2}-[0-9A-F]{2}$/.test(a.mac));
+const validSecGateway = (g) => isRecord(g) && ['IPv4', 'IPv6'].includes(g.family) && isStr(g.nextHop, 64) && isStr(g.adapter, 120) && (g.metric === null || isCount(g.metric));
+const validSecProfile = (p) => isRecord(p) && isStr(p.name, 40) && isStr(p.enabled, 20) && isStr(p.inbound, 20) && isStr(p.outbound, 20);
+const validSecEvents = (v) => isRecord(v) && [v.critical, v.error, v.warning, v.total, v.maxEvents].every(isCount) && typeof v.truncated === 'boolean'
+  && Array.isArray(v.hourly) && v.hourly.length === 24 && v.hourly.every((h) => isRecord(h) && isCount(h.critical) && isCount(h.error) && isCount(h.warning))
+  && listOf((p) => isRecord(p) && isStr(p.name, 120) && isCount(p.count))(v.providers);
+function validPcSecurity(d) {
+  if (!isRecord(d) || d.readOnly !== true || d.storage !== 'none' || d.source !== '이 PC' || !isTime(d.measuredAt)) return false;
+  const n = d.network, f = d.firewall, e = d.events;
+  return isRecord(n) && isRecord(f) && isRecord(e) && f.store === 'ActiveStore'
+    && validSecMetric(n.interfaces, '개', listOf(validSecInterface)) && validSecMetric(n.dns, '개', listOf((s) => isStr(s, 64)))
+    && validSecMetric(n.adapters, '개', listOf(validSecAdapter)) && validSecMetric(n.gateways, '개', listOf(validSecGateway))
+    && validSecMetric(f.profiles, '개', listOf(validSecProfile))
+    && isRecord(e.range) && (e.range.start === null || isTime(e.range.start)) && (e.range.end === null || isTime(e.range.end))
+    && validSecMetric(e.system, '건', validSecEvents) && validSecMetric(e.application, '건', validSecEvents);
+}
+
+let pcSecurityController = null;
+let pcSecurityGeneration = 0;
+async function loadPcSecurity() {
+  if (state.pcSecurity.status === 'loading') return;
+  const requestGen = ++pcSecurityGeneration;
+  const controller = new AbortController();
+  pcSecurityController = controller;
+  const previous = state.pcSecurity.status === 'ok' ? state.pcSecurity : state.pcSecurity.previous || null;
+  state.pcSecurity = { status: 'loading', previous };
+  measurements.pcSecurity = { status: 'measuring' };
+  renderDashboard();
+  try {
+    const result = await timedRequest('pcSecurity', '/api/pc-security', { signal: controller.signal }, () => requestGen === pcSecurityGeneration);
+    if (requestGen !== pcSecurityGeneration) return;
+    const resource = toResource(result, validPcSecurity);
+    // 실패해도 이전 결과는 이전 시각의 값으로만 함께 둔다(지금 값처럼 보이게 하지 않는다).
+    state.pcSecurity = resource.status === 'ok' ? resource : { ...resource, previous };
+    renderDashboard();
+  } finally {
+    if (pcSecurityController === controller) pcSecurityController = null;
+  }
 }
 
 // ---------- 내 PC 상태(학생 구현) ----------
@@ -1366,7 +1422,7 @@ function renderDashboard() {
   if (dashboardLoadFailed) return setChildren(target, stateBox('error', '관제 대시보드(/dashboard.mjs)를 불러오지 못했습니다. 다른 화면은 그대로 쓸 수 있습니다.'));
   if (!dashboardModule) return setChildren(target, loadingBox());
   try {
-    dashboardModule.renderDashboard(target, dashboardSnapshot(), { onPcStatusRefresh: () => loadPcStatus() });
+    dashboardModule.renderDashboard(target, dashboardSnapshot(), { onPcStatusRefresh: () => loadPcStatus(), onPcSecurityRead: () => loadPcSecurity() });
   } catch {
     setChildren(target, stateBox('error', '관제 대시보드를 그리는 중 오류가 발생했습니다. 다른 화면은 계속 동작합니다.'));
   }
