@@ -28,7 +28,8 @@
   <div class="layout">
     <nav class="sidebar" aria-label="주 메뉴">
       <div role="tablist" aria-orientation="vertical" id="nav">
-        <button type="button" role="tab" id="tab-protection" data-testid="nav-protection" data-view="protection" aria-controls="view-protection" aria-selected="true" tabindex="0">보호 현황</button>
+        <button type="button" role="tab" id="tab-dashboard" data-testid="nav-dashboard" data-view="dashboard" aria-controls="view-dashboard" aria-selected="true" tabindex="0">관제 대시보드</button>
+        <button type="button" role="tab" id="tab-protection" data-testid="nav-protection" data-view="protection" aria-controls="view-protection" aria-selected="false" tabindex="-1">보호 현황</button>
         <button type="button" role="tab" id="tab-apps" data-testid="nav-apps" data-view="apps" aria-controls="view-apps" aria-selected="false" tabindex="-1">업무 앱</button>
         <button type="button" role="tab" id="tab-records" data-testid="nav-records" data-view="records" aria-controls="view-records" aria-selected="false" tabindex="-1">보안 기록</button>
       </div>
@@ -43,7 +44,13 @@
         제공 코드는 학생 성취로 계산되지 않으며, 예제(demo)·연결 없음 상태는 실제 연결 성공이 아닙니다.
       </p>
 
-      <section id="view-protection" class="view" role="tabpanel" aria-labelledby="tab-protection">
+      <section id="view-dashboard" class="view" role="tabpanel" aria-labelledby="tab-dashboard">
+        <h1>관제 대시보드</h1>
+        <p class="muted">다른 화면이 이미 불러온 값을 한곳에 모아 보여 줍니다. 이 화면 때문에 새로 요청하지 않습니다. 모든 값에는 출처 배지(실측·예시 값·연결 없음·확인 불가 등)가 글자로 붙어 있습니다.</p>
+        <div id="dashboard-root" class="dashboard" data-testid="dashboard"></div>
+      </section>
+
+      <section id="view-protection" class="view" role="tabpanel" aria-labelledby="tab-protection" hidden>
         <h1>보호 현황</h1>
 
         <div class="grid-2">

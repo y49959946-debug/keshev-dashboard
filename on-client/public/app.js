@@ -46,7 +46,7 @@ const RESOURCE_LABELS = {
 };
 
 const state = {
-  view: 'protection',
+  view: 'dashboard',
   checkedAt: null,
   me: { status: 'loading' },
   apps: { status: 'loading' },
@@ -391,6 +391,7 @@ function renderMode() {
   badge.textContent = MODE_LABELS[mode];
   $('checked-at').textContent = state.checkedAt ? `확인 시각 ${formatTime(state.checkedAt)}` : '';
   renderStudent('status');
+  renderDashboard();
 }
 
 function renderErrors() {
@@ -455,6 +456,7 @@ function renderAiConnection() {
       el('p', { className: 'muted', text: '이 점검은 사건 설명을 실행하지 않았습니다. 실제 사건 설명의 근거와 결과는 보안 기록에서 별도로 확인하세요.' }));
   }
   renderStudent('aiConnection');
+  renderDashboard();
 }
 
 function cancelAiCheck({ reset = false } = {}) {
@@ -547,6 +549,7 @@ function renderAiConnect() {
     s.reason ? el('p', { className: 'muted', text: `상태 코드: ${s.reason}` }) : null,
     appConnectInvalidated && s.phase === 'idle' ? el('p', { testid: 'ai-connect-invalidated', className: 'muted', text: '계정 연결이 바뀌어 이전 AI 앱 승인 표시를 화면에서 지웠습니다. 서버의 앱 권한을 취소한 것은 아닙니다. 필요하면 「AI 연결 시작」을 직접 눌러 다시 진행하세요.' }) : null,
   );
+  renderDashboard();
 }
 
 // ---------- 계정 연결 확인(native 로그인) ----------
@@ -719,11 +722,15 @@ async function loadDiagnostics() {
   output.hidden = true;
   state.diagnostics = { status: 'loading' };
   trackError('diagnostics', state.diagnostics);
+  measurements.diagnostics = { status: 'measuring' };
+  renderDashboard();
 
   try {
-    const resource = toResource(await request('/api/diagnostics'));
+    const result = await timedRequest('diagnostics', '/api/diagnostics');
+    const resource = toResource(result);
     state.diagnostics = resource;
     trackError('diagnostics', resource);
+    renderDashboard();
     if (resource.status === 'error') {
       status.textContent = `불러오지 못했습니다: ${resource.error.message}`;
       return;
@@ -849,6 +856,7 @@ async function requestAccess(appId, appName, button) {
   state.access = { status: 'loading', appId, appName };
   renderAccess();
   renderStudent('decision');
+  renderDashboard();
 
   try {
     const result = await request('/api/access', { method: 'POST', body: { appId }, signal: controller.signal });
@@ -1259,6 +1267,78 @@ async function loadStudentModule() {
   renderAllStudent();
 }
 
+// ---------- 관제 대시보드 ----------
+// 대시보드는 이미 불러온 state 와 아래 측정값만 읽는다. 대시보드 때문에 새 요청·타이머를 만들지 않는다.
+
+// 이 브라우저가 로컬 서버에 보낸 GET 의 측정값. key → { status: 'measuring' } 또는 측정 결과.
+const measurements = {};
+// request() 가 서버 응답 없이 스스로 만든 실패. 이때의 meta 는 서버가 알려 준 값이 아니다.
+const LOCAL_FAILURE_CODES = new Set(['NETWORK_ERROR', 'TIMEOUT', 'CANCELLED', 'INVALID_RESPONSE']);
+const NO_RESPONSE_CODES = new Set(['NETWORK_ERROR', 'TIMEOUT', 'CANCELLED']);
+
+// request() 를 그대로 부르고, 시작부터 응답 본문을 다 읽을 때까지의 시간을 performance.now() 로 잰다.
+async function timedRequest(key, path, options, isCurrent = () => true) {
+  const startedAt = performance.now();
+  const result = await request(path, options);
+  const ms = performance.now() - startedAt;
+  if (isCurrent()) {
+    const code = result.ok ? null : result.error.code;
+    const fromServer = result.ok || !LOCAL_FAILURE_CODES.has(code);
+    measurements[key] = {
+      status: 'done',
+      ms,
+      receivedAt: new Date().toISOString(),
+      responded: !NO_RESPONSE_CODES.has(code),
+      serverMode: fromServer ? result.meta.mode : null,
+      ok: result.ok,
+      code,
+    };
+  }
+  return result;
+}
+
+let dashboardModule = null;
+let dashboardLoadFailed = false;
+
+function dashboardSnapshot() {
+  const copy = (value) => { try { return structuredClone(value); } catch { return { status: 'error', error: { code: 'CONTRACT_MISMATCH' }, meta: UNKNOWN_META }; } };
+  const access = state.access;
+  return {
+    origin: location.host,
+    refreshing: refreshController !== null,
+    measurements: copy(measurements),
+    me: copy(state.me), devices: copy(state.devices), sessions: copy(state.sessions),
+    apps: copy(state.apps), events: copy(state.events),
+    access: { ...copy(access), appId: access.appId ?? null, appName: access.appName ?? null },
+    diagnostics: copy(state.diagnostics),
+    aiConnection: copy(state.aiConnection),
+    aiConnectPhase: aiConnect ? aiConnect.state.phase : aiConnectLoadFailed ? 'unknown' : 'idle',
+  };
+}
+
+function renderDashboard() {
+  const target = $('dashboard-root');
+  if (!target) return;
+  if (dashboardLoadFailed) return setChildren(target, stateBox('error', '관제 대시보드(/dashboard.mjs)를 불러오지 못했습니다. 다른 화면은 그대로 쓸 수 있습니다.'));
+  if (!dashboardModule) return setChildren(target, loadingBox());
+  try {
+    dashboardModule.renderDashboard(target, dashboardSnapshot());
+  } catch {
+    setChildren(target, stateBox('error', '관제 대시보드를 그리는 중 오류가 발생했습니다. 다른 화면은 계속 동작합니다.'));
+  }
+}
+
+async function loadDashboardModule() {
+  try {
+    const mod = await import('/dashboard.mjs');
+    if (typeof mod.renderDashboard !== 'function') throw new Error('missing export');
+    dashboardModule = mod;
+  } catch {
+    dashboardLoadFailed = true;
+  }
+  renderDashboard();
+}
+
 // ---------- 로드 ----------
 
 const RENDERERS = {
@@ -1273,7 +1353,7 @@ const PATHS = { me: '/api/me', apps: '/api/apps', events: '/api/events', devices
 
 async function loadResource(key, gen, signal) {
   const requestedAt = Date.now();
-  const result = await request(PATHS[key], { signal });
+  const result = await timedRequest(key, PATHS[key], { signal }, () => gen === generation);
   if (gen !== generation) return;
   const coverageKind = Object.hasOwn(COVERAGE_RULES, key) ? key : undefined;
   state[key] = toResource(result, VALIDATORS[key], coverageKind, coverageKind ? { requestedAt, receivedAt: Date.now() } : undefined);
@@ -1311,6 +1391,7 @@ async function loadAll() {
   refresh.textContent = '불러오는 중…';
   state.checkedAt = null;
   for (const key of Object.keys(PATHS)) {
+    measurements[key] = { status: 'measuring' };
     state[key] = { status: 'loading' };
     trackError(key, state[key]);
     RENDERERS[key]();
@@ -1324,6 +1405,7 @@ async function loadAll() {
       refreshController = null;
       refresh.disabled = false;
       refresh.textContent = '다시 불러오기';
+      renderDashboard();
     }
   }
 }
@@ -1362,6 +1444,7 @@ function init() {
   renderVulnerabilities();
   renderAllStudent();
   loadStudentModule();
+  loadDashboardModule();
   loadAll();
 }
 
