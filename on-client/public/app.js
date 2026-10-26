@@ -57,6 +57,7 @@ const state = {
   diagnostics: { status: 'idle' },
   vulnerabilities: { status: 'idle' },
   aiConnection: { status: 'idle' },
+  pcStatus: { status: 'idle' },
   selectedExplanation: { event: null, resource: { status: 'idle' } },
   errors: new Map(),
 };
@@ -1313,7 +1314,50 @@ function dashboardSnapshot() {
     diagnostics: copy(state.diagnostics),
     aiConnection: copy(state.aiConnection),
     aiConnectPhase: aiConnect ? aiConnect.state.phase : aiConnectLoadFailed ? 'unknown' : 'idle',
+    pcStatus: copy(state.pcStatus),
   };
+}
+
+// ---------- 내 PC 상태(학생 구현) ----------
+// 앱을 처음 열 때, 「다시 불러오기」, 「내 PC 상태 새로 재기」를 누를 때만 부른다. 자동 재요청 없음.
+// 오류는 대시보드 안에서만 보여 준다(trackError 에 넣지 않아 학생 renderStatus 입력은 그대로다).
+const PC_UNITS = { cpu: '%', memory: 'GB', disk: 'GB' };
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+function validPcMetric(m, key) {
+  if (!isRecord(m) || m.unit !== PC_UNITS[key] || !isTime(m.measuredAt)) return false;
+  if (m.status === 'unavailable') return m.value === null && typeof m.reason === 'string' && m.reason.length > 0 && m.reason.length <= 300;
+  if (m.status !== 'ok' || !isNum(m.value) || m.value < 0) return false;
+  if (key === 'cpu') return m.value <= 100;
+  if (key === 'memory') return isNum(m.totalGB) && isNum(m.percent) && m.percent >= 0 && m.percent <= 100;
+  return isNum(m.totalGB) && isNum(m.freePercent) && m.freePercent >= 0 && m.freePercent <= 100 && typeof m.drive === 'string' && m.drive.length <= 8;
+}
+const validPcSet = (row) => isRecord(row) && Object.keys(PC_UNITS).every((key) => validPcMetric(row[key], key));
+function validPcStatus(d) {
+  if (!isRecord(d) || !validPcSet(d.current) || !Array.isArray(d.history) || !isRecord(d.sampling)) return false;
+  const s = d.sampling;
+  if (typeof s.running !== 'boolean' || !Number.isInteger(s.intervalMs) || !Number.isInteger(s.maxSamples) || s.storage !== 'memory-only'
+    || d.history.length > s.maxSamples || (s.startedAt !== null && !isTime(s.startedAt))) return false;
+  return d.history.every((row) => isRecord(row) && isTime(row.at) && validPcSet(row));
+}
+
+let pcStatusController = null;
+let pcStatusGeneration = 0;
+async function loadPcStatus() {
+  const requestGen = ++pcStatusGeneration;
+  if (pcStatusController) pcStatusController.abort();
+  const controller = new AbortController();
+  pcStatusController = controller;
+  state.pcStatus = { status: 'loading' };
+  measurements.pcStatus = { status: 'measuring' };
+  renderDashboard();
+  try {
+    const result = await timedRequest('pcStatus', '/api/pc-status', { signal: controller.signal }, () => requestGen === pcStatusGeneration);
+    if (requestGen !== pcStatusGeneration) return;
+    state.pcStatus = toResource(result, validPcStatus);
+    renderDashboard();
+  } finally {
+    if (pcStatusController === controller) pcStatusController = null;
+  }
 }
 
 function renderDashboard() {
@@ -1322,7 +1366,7 @@ function renderDashboard() {
   if (dashboardLoadFailed) return setChildren(target, stateBox('error', '관제 대시보드(/dashboard.mjs)를 불러오지 못했습니다. 다른 화면은 그대로 쓸 수 있습니다.'));
   if (!dashboardModule) return setChildren(target, loadingBox());
   try {
-    dashboardModule.renderDashboard(target, dashboardSnapshot());
+    dashboardModule.renderDashboard(target, dashboardSnapshot(), { onPcStatusRefresh: () => loadPcStatus() });
   } catch {
     setChildren(target, stateBox('error', '관제 대시보드를 그리는 중 오류가 발생했습니다. 다른 화면은 계속 동작합니다.'));
   }
@@ -1399,7 +1443,7 @@ async function loadAll() {
   renderMode();
 
   try {
-    await Promise.all(Object.keys(PATHS).map((key) => loadResource(key, gen, controller.signal)));
+    await Promise.all([...Object.keys(PATHS).map((key) => loadResource(key, gen, controller.signal)), loadPcStatus()]);
   } finally {
     if (gen === generation) {
       refreshController = null;

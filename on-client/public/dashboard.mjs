@@ -24,8 +24,9 @@ const ACCESS_TEXT = { allowed: '허용됨', denied: '거부됨', unknown: '확�
 const DEVICE_TEXT = { compliant: '기준 충족', noncompliant: '기준 미충족', unknown: '확인 불가' };
 const SESSION_TEXT = { active: '활성', expired: '만료', revoked: '회수됨', unknown: '확인 불가' };
 const DECISION_TEXT = { allow: '허용', deny: '차단', challenge: '추가 확인 필요', unknown: '판정 불명' };
-const PATH_LABELS = { me: '로그인 정보', apps: '업무 앱', events: '보안 기록', devices: '기기', sessions: '세션', diagnostics: '도움정보' };
-const MEASURE_ORDER = ['me', 'devices', 'sessions', 'apps', 'events', 'diagnostics'];
+const PATH_LABELS = { me: '로그인 정보', apps: '업무 앱', events: '보안 기록', devices: '기기', sessions: '세션', diagnostics: '도움정보', pcStatus: '내 PC 상태' };
+const PATHS = { me: '/api/me', apps: '/api/apps', events: '/api/events', devices: '/api/devices', sessions: '/api/sessions', diagnostics: '/api/diagnostics', pcStatus: '/api/pc-status' };
+const MEASURE_ORDER = ['me', 'devices', 'sessions', 'apps', 'events', 'pcStatus', 'diagnostics'];
 const AI_PHASE_TEXT = {
   idle: '시작 전', cancelled: '취소됨', starting: '시작하는 중', awaiting_approval: '승인 대기', finishing: '연결 확인 중',
   checking: '확인 중', cancelling: '취소하는 중', connected: '연결됨(17단계 절차 결과)', error: '실패', unknown: '확인 불가',
@@ -301,7 +302,7 @@ function measuredPanel(snap) {
 
   const rows = MEASURE_ORDER.map((key) => {
     const m = snap.measurements[key];
-    const path = key === 'diagnostics' ? '/api/diagnostics' : `/api/${key}`;
+    const path = PATHS[key];
     if (!m) return el('tr', {}, [el('th', { scope: 'row', text: `${PATH_LABELS[key]} (GET ${path})` }),
       el('td', { colspan: '4', text: key === 'diagnostics' ? '확인 전 · 「도움정보 불러오기」를 눌러야 잽니다.' : '확인 전' })]);
     if (m.status !== 'done') return el('tr', {}, [el('th', { scope: 'row', text: `${PATH_LABELS[key]} (GET ${path})` }), el('td', { colspan: '4', text: '재는 중…' })]);
@@ -358,7 +359,120 @@ function legend() {
   ]);
 }
 
-export function renderDashboard(target, snap) {
+// ---------- 내 PC 상태(실측) — 학생 구현 ----------
+// 서버(이 PC 의 node)가 node:os·node:fs 로 잰 값. 예제 모드(meta.mode=demo)에서도 실측이다.
+
+const PC_METRICS = [
+  { key: 'cpu', name: 'CPU 사용률', digits: 1, unitText: '%',
+    now: (m) => `${m.value.toFixed(1)} %`,
+    bar: (m) => m.value, // 0~100
+    sampleText: (m) => `${m.value.toFixed(1)} %` },
+  { key: 'memory', name: '메모리 사용량', digits: 2, unitText: 'GB',
+    now: (m) => `${m.value.toFixed(2)} GB 사용 / 전체 ${m.totalGB.toFixed(2)} GB (${m.percent.toFixed(1)} %)`,
+    bar: (m) => m.percent,
+    sampleText: (m) => `${m.value.toFixed(2)} GB (${m.percent.toFixed(1)} %)` },
+  { key: 'disk', name: '디스크 남은 공간', digits: 2, unitText: 'GB',
+    now: (m) => `${m.value.toFixed(2)} GB 남음 / 전체 ${m.totalGB.toFixed(2)} GB (남은 비율 ${m.freePercent.toFixed(1)} %) · ${m.drive}`,
+    bar: (m) => m.freePercent,
+    sampleText: (m) => `${m.value.toFixed(2)} GB (남은 비율 ${m.freePercent.toFixed(1)} %)` },
+];
+
+const shortTime = (value) => { const d = new Date(value); return Number.isNaN(d.getTime()) ? '시각 확인 불가' : d.toLocaleTimeString('ko-KR'); };
+
+function pcMetric(def, data) {
+  const cur = data.current[def.key];
+  const okNow = cur.status === 'ok';
+  const fixed = (v) => `${v.toFixed(def.digits)} ${def.unitText}`;
+  const samples = data.history.map((row) => ({ at: row.at, m: row[def.key] }));
+  const good = samples.filter((s) => s.m.status === 'ok');
+  const missing = samples.length - good.length;
+
+  const lines = [];
+  if (good.length < 2) {
+    lines.push(el('p', { className: 'dash-note', testid: `dash-pc-${def.key}-trend`, text: `추이 비교 불가(표본 부족 · 쓸 수 있는 표본 ${good.length}개)` }));
+  } else {
+    const values = good.map((s) => s.m.value);
+    const avg = values.reduce((a, b) => a + b, 0) / values.length;
+    const max = Math.max(...values), min = Math.min(...values);
+    let compare = '지금 값이 없어 평균과 비교할 수 없습니다.';
+    if (okNow) {
+      const a = Number(avg.toFixed(def.digits)), c = Number(cur.value.toFixed(def.digits));
+      compare = c > a ? '지금이 평균보다 높음' : c < a ? '지금이 평균보다 낮음' : '지금이 평균과 같음';
+    }
+    lines.push(el('dl', { className: 'kv dash-pc-compare', testid: `dash-pc-${def.key}-trend` }, [
+      el('dt', { text: '표본' }), el('dd', { text: `${good.length}개 · ${shortTime(good[0].at)} ~ ${shortTime(good.at(-1).at)}` }),
+      el('dt', { text: '평균' }), el('dd', { text: fixed(avg) }),
+      el('dt', { text: '최고 · 최저' }), el('dd', { text: `${fixed(max)} · ${fixed(min)}` }),
+      el('dt', { text: '비교' }), el('dd', { text: compare }),
+    ]));
+  }
+  if (missing > 0) lines.push(el('p', { className: 'dash-note', text: `확인 불가 표본 ${missing}개는 평균·최고·최저에서 뺐습니다.` }));
+
+  // 작은 막대: 0~100 % 기준(CPU 사용률, 메모리 사용 비율, 디스크 남은 비율). 못 읽은 표본은 빈 칸 + 글자.
+  const bars = samples.length === 0 ? null : el('ol', { className: 'mini-trend', 'aria-label': `${def.name} 최근 표본 ${samples.length}개` },
+    samples.map((s) => {
+      const label = `${shortTime(s.at)} ${s.m.status === 'ok' ? def.sampleText(s.m) : `확인 불가(${s.m.reason})`}`;
+      const fill = el('span', { className: 'mini-fill' });
+      if (s.m.status === 'ok') fill.style.height = `${Math.max(0, Math.min(100, def.bar(s.m)))}%`;
+      return el('li', { className: s.m.status === 'ok' ? 'mini-col' : 'mini-col mini-missing', title: label }, [
+        fill, el('span', { className: 'sr-only', text: label }),
+      ]);
+    }));
+
+  return el('section', { className: 'dash-pc-metric', testid: `dash-pc-${def.key}`, 'data-source': okNow ? 'measured' : 'unverified', 'aria-label': def.name }, [
+    el('div', { className: 'dash-card-head' }, [el('h3', { text: def.name }), badge(okNow ? 'measured' : 'unverified')]),
+    el('p', { className: 'dash-pc-now', testid: `dash-pc-${def.key}-now`, text: okNow ? `지금 ${def.now(cur)}` : `확인 불가 · ${cur.reason}` }),
+    el('p', { className: 'dash-note', text: `잰 시각 ${formatTime(cur.measuredAt)} · 단위 ${def.unitText}${def.key === 'cpu' ? ' · 지금 값은 0.5초 순간값, 표본은 15초 평균' : ''}` }),
+    ...lines,
+    bars,
+    samples.length > 0 ? el('details', { className: 'dash-table' }, [
+      el('summary', { text: '표로 보기' }),
+      el('table', {}, [
+        el('thead', {}, el('tr', {}, [el('th', { scope: 'col', text: '시각' }), el('th', { scope: 'col', text: '값' })])),
+        el('tbody', {}, samples.map((s) => el('tr', {}, [el('td', { text: shortTime(s.at) }),
+          el('td', { text: s.m.status === 'ok' ? def.sampleText(s.m) : `확인 불가(${s.m.reason})` })]))),
+      ]),
+    ]) : null,
+  ]);
+}
+
+function pcPanel(snap, actions) {
+  const pc = snap.pcStatus;
+  const loading = !!pc && pc.status === 'loading';
+  const button = el('button', { type: 'button', className: 'btn', testid: 'dash-pc-refresh', 'aria-disabled': loading ? 'true' : null,
+    text: loading ? '재는 중…' : '내 PC 상태 새로 재기' });
+  button.addEventListener('click', () => {
+    if (!loading && actions && typeof actions.onPcStatusRefresh === 'function') actions.onPcStatusRefresh();
+  });
+
+  let source, body;
+  if (!pc || pc.status === 'idle') { source = 'pending'; body = [el('p', { className: 'dash-empty', text: '아직 재지 않았습니다.' })]; }
+  else if (loading) { source = 'loading'; body = [el('p', { className: 'dash-empty', text: '재는 중… (CPU 지금 값은 0.5초 동안 잽니다)' })]; }
+  else if (pc.status !== 'ok') {
+    source = sourceOf(pc) === 'disconnected' ? 'disconnected' : 'unverified';
+    body = [el('p', { className: 'dash-empty', 'data-source': source, testid: 'dash-pc-state', text: `값 없음 · ${errorText({ ...pc, meta: { mode: source === 'disconnected' ? 'disconnected' : 'unknown' } })}` })];
+  } else {
+    const d = pc.data;
+    source = combine(PC_METRICS.map((m) => (d.current[m.key].status === 'ok' ? 'measured' : 'unverified')));
+    body = [
+      el('div', { className: 'dash-pc-grid' }, PC_METRICS.map((m) => pcMetric(m, d))),
+      d.sampling.running ? null : el('p', { className: 'dash-note', text: '서버의 15초 측정기가 멈춰 있어 추이 표본이 쌓이지 않습니다.' }),
+    ];
+  }
+
+  return el('section', { className: 'dash-panel dash-pc', testid: 'dash-pc-panel', 'data-source': source, 'aria-label': '내 PC 상태(실측)' }, [
+    el('div', { className: 'dash-card-head' }, [el('h2', { text: '내 PC 상태(실측)' }), badge(source, 'dash-pc-panel-source')]),
+    el('p', { className: 'dash-note', text: '이 PC 의 앱 서버가 Node 내장 기능(node:os·node:fs)으로 잰 값입니다. 예제 모드에서도 예시 값이 아니라 실측입니다.' }),
+    el('p', { className: 'dash-note', text: '추이 표본은 서버가 켜져 있는 동안 15초마다 서버 메모리에만 쌓습니다(최대 40개, 약 10분). 파일 저장·외부 전송은 없고, 서버를 끄면 사라집니다. 이 화면은 자동으로 다시 묻지 않습니다.' }),
+    el('div', { className: 'row' }, button),
+    ...body,
+  ]);
+}
+
+export function renderDashboard(target, snap, actions = {}) {
+  // 다시 그려도 「새로 재기」 버튼의 키보드 포커스를 유지한다.
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  const refocus = !!active && target.contains && target.contains(active) && active.dataset && active.dataset.testid === 'dash-pc-refresh';
   target.replaceChildren(
     el('p', { className: 'dash-refresh', testid: 'dash-refresh-state', text: snap.refreshing
       ? '다시 불러오는 중… 값이 하나씩 바뀝니다.'
@@ -366,6 +480,11 @@ export function renderDashboard(target, snap) {
     legend(),
     el('div', { className: 'dash-cards' }, [engineCard(snap), identityCard(snap), appsCard(snap), aiCard(snap)]),
     el('div', { className: 'dash-lower' }, [trendPanel(snap), recentPanel(snap)]),
+    pcPanel(snap, actions),
     measuredPanel(snap),
   );
+  if (refocus) {
+    const button = target.querySelector('[data-testid="dash-pc-refresh"]');
+    if (button) button.focus();
+  }
 }

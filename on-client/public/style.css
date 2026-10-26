@@ -269,3 +269,19 @@ main:focus { outline: none; }
 .dash-recent li { display: flex; flex-direction: column; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .dash-recent li:last-child { border-bottom: 0; }
 .dash-recent-summary { font-weight: 500; overflow-wrap: anywhere; }
+
+/* 내 PC 상태(실측) — 값 3칸(넓을 때) → 1칸, 작은 막대 추이 */
+.dash-pc { margin-bottom: 16px; }
+.dash-pc .row { margin: 8px 0 12px; }
+.dash-pc-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+@container dashboard (min-width: 900px) { .dash-pc-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.dash-pc-metric { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; min-width: 0; }
+.dash-pc-metric h3 { margin: 0; font-size: 0.95rem; }
+.dash-pc-now { margin: 4px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.dash-pc-compare { margin-top: 8px; font-size: 0.85rem; }
+.btn[aria-disabled="true"] { cursor: progress; opacity: 0.6; }
+.mini-trend { list-style: none; margin: 10px 0 0; padding: 0; display: flex; align-items: flex-end; gap: 2px; height: 48px; border-bottom: 1px solid var(--border); }
+.mini-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
+.mini-fill { display: block; width: 100%; background: var(--accent); border-radius: 2px 2px 0 0; }
+.mini-col:hover { background: var(--bg); }
+.mini-missing { border: 1px dotted var(--unknown); border-bottom: 0; }

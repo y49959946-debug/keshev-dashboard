@@ -16,6 +16,7 @@ import {prepareLearnerSupportRequest} from './ai/learner-support-contract.mjs';
 import {createVaultOnAiService} from './ai/vault-service.mjs';
 import {createConnectionManager} from './connection/manager.mjs';
 import {createProjectScanner} from './vulnerabilities/project-scan.mjs';
+import {createPcStatusSampler} from './pc-status.mjs';
 import {buildLocalLearnerSupportGuide,isLearnerSupportProblemKind,readLocalLearnerSupportObservation} from './learner-support/service.mjs';
 import {nativeOwn,nativePublicError} from './connection/native-login.mjs';
 import {createNativeHostContext,captureNativeHostConfiguration,readNativeHostConfiguration,openNativeHostOperation,readNativeHostOperation,assertNativeHostOperation,createNativeOperationVault,closeNativeHostOperation} from './connection/native-context.mjs';
@@ -311,6 +312,8 @@ export function createOnServer(serverOptions={}) {
       return snapshot;
     }:undefined});
   const meta=()=>({mode,checkedAt:clock().toISOString(),starterVersion:'0.1.0'});
+  // 내 PC 상태(학생 구현): 서버가 듣는 동안만 15초마다 메모리에 표본을 쌓는다. 파일·외부 전송 없음.
+  const pcStatus=createPcStatusSampler();
   const server=http.createServer(async(req,res)=>{
     // Register before identity/events reads: disconnects during preparation must
     // cancel the later AI operation, even when an adapter ignores cancellation.
@@ -681,6 +684,9 @@ export function createOnServer(serverOptions={}) {
         send(200,{ok:true,data:guide});return;
         }finally{closeNativeHostOperation(nativeOperation);}
       }
+      if(req.method==='GET'&&url.pathname==='/api/pc-status'){
+        const data=await bounded(signal=>pcStatus.read({signal}));send(200,{ok:true,data});return;
+      }
       if(req.method==='GET'&&url.pathname==='/api/diagnostics'){
         // 자동 호출이나 비밀 원문·전체 설정 출력 없이 로컬 연결 상태만 진단한다.
         const info=(mappedAi??defaultAi).connectionInfo();
@@ -703,6 +709,7 @@ export function createOnServer(serverOptions={}) {
   });
   server.requestTimeout=15000;server.headersTimeout=10000;
   server.once('close',()=>{connections.close();nativeHost?.close();for(const controller of connectionReads)controller.abort();});
+  server.on('listening',()=>pcStatus.start());server.on('close',()=>pcStatus.stop());
   return server;
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
