@@ -3,3 +3,4 @@ build/
 packaging/output/
 .env
 *.log
+packaging/cache/
