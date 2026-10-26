@@ -313,6 +313,8 @@ npm run check
 
 저장소 파일을 고쳐도 설치본에는 저절로 들어가지 않습니다. 다시 빌드하고 다시 설치해야 합니다. `build-package.ps1`은 이번에 고친 `public\app.js`·`dashboard.mjs`·`style.css`와 `docs\PRODUCT_DASHBOARD.md`를 고정 목록으로 담습니다.
 
+> **줄바꿈 주의:** 내용이 같아도 줄바꿈(CRLF/LF)이 다르면 SHA256은 DIFF로 나옵니다. Windows에서 `git clone`한 폴더는 CRLF, 원래 작업 폴더는 LF일 수 있습니다. 그래서 설치본·빌드 목록은 **그 설치본을 빌드한 폴더의 파일과 비교해야 합니다.**
+
 ```powershell
 # 1) 빌드 결과 목록과 저장소 대조 (D:\keshev-dashboard)
 $list = Get-Content .\dist\Keshev\PACKAGE-FILES.txt | Where-Object { $_ -match '^([0-9a-f]{64})\s+\d+\s+app\(.+)$' } | ForEach-Object { [pscustomobject]@{ Hash = $Matches[1]; Path = $Matches[2] } }

@@ -62,10 +62,14 @@ if ($owner) {
 # 포함된 Node 를 PATH 맨 앞에 둔다. 이 창(과 여기서 부르는 스크립트)에만 적용되며 PC 설정은 바꾸지 않는다.
 $env:PATH = "$nodeDir;$env:PATH"
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $starter, '-Port', [string]$Port, '-Background')
-if ($Demo) { $argList += '-Demo' }
-& $powershell @argList
-$code = $LASTEXITCODE
+# 하위 PowerShell 하나만 기다린다. '& 명령'으로 부르면 이 실행기의 출력을 파일 등으로 돌렸을 때
+# 뒤에서 켜진 node 가 그 출력 통로를 물려받아, node 가 꺼질 때까지 여기서 멈출 수 있다.
+# 경로에는 큰따옴표가 들어갈 수 없으므로 경로를 큰따옴표로 감싸 한 인자로 넘긴다(공백·한글 경로 포함).
+$argText = '-NoProfile -ExecutionPolicy Bypass -File "' + $starter + '" -Port ' + [string]$Port + ' -Background' + $(if ($Demo) { ' -Demo' } else { '' })
+$child = Start-Process -FilePath $powershell -ArgumentList $argText -NoNewWindow -PassThru
+$null = $child.Handle   # 끝난 뒤 ExitCode 를 읽으려면 미리 핸들을 잡아 둔다(PowerShell 5.1)
+$child.WaitForExit()
+$code = $child.ExitCode
 if ($code -ne 0) { Done "케셰브를 켜지 못했습니다(종료 코드 $code). 위 메시지를 확인해 주세요." 1 }
 
 # 실제로 포함된 Node 로 켜졌는지 확인한다.
