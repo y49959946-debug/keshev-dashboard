@@ -1422,7 +1422,12 @@ function renderDashboard() {
   if (dashboardLoadFailed) return setChildren(target, stateBox('error', '관제 대시보드(/dashboard.mjs)를 불러오지 못했습니다. 다른 화면은 그대로 쓸 수 있습니다.'));
   if (!dashboardModule) return setChildren(target, loadingBox());
   try {
-    dashboardModule.renderDashboard(target, dashboardSnapshot(), { onPcStatusRefresh: () => loadPcStatus(), onPcSecurityRead: () => loadPcSecurity() });
+    dashboardModule.renderDashboard(target, dashboardSnapshot(), {
+      onPcStatusRefresh: () => loadPcStatus(),
+      onPcSecurityRead: () => loadPcSecurity(),
+      // 「이 PC에서 잰 값」 다시 조회 = 「다시 불러오기」와 같은 요청(판정·AI 점검·AI 설명·조치·패키지 조회 화면이 초기화된다)
+      onRemeasure: () => { if (refreshController === null) loadAll(); },
+    });
   } catch {
     setChildren(target, stateBox('error', '관제 대시보드를 그리는 중 오류가 발생했습니다. 다른 화면은 계속 동작합니다.'));
   }

@@ -246,6 +246,7 @@ function trendPanel(snap) {
       }));
     const peak = counts.indexOf(Math.max(...counts));
     body.push(bars,
+      el('p', { className: 'dash-note', text: TABLE_HINT }),
       el('p', { className: 'dash-note', text: total === 0
         ? '받은 기록이 0건입니다(응답은 정상이며 연결 없음과 다릅니다).'
         : `합계 ${total}건 · 가장 많은 시간대 ${String(peak).padStart(2, '0')}시(${counts[peak]}건) · 기준 시간대 ${zone}` }),
@@ -337,8 +338,16 @@ function measuredPanel(snap) {
     diagSummary = el('p', { className: 'dash-empty', 'data-source': 'pending', text: '확인 전 · 도움정보는 자동으로 부르지 않습니다. 「보호 현황 › 도움정보」에서 「도움정보 불러오기」를 누르세요.' });
   }
 
-  return el('section', { className: 'dash-panel dash-measured', testid: 'dash-measured-panel', 'data-source': source, 'aria-label': '이 PC에서 잰 값' }, [
-    el('div', { className: 'dash-card-head' }, [el('h2', { text: '이 PC에서 잰 값' }), badge(source, 'dash-measured-panel-source')]),
+  // 실패한 요청 목록(응답이 없었거나 실패 응답)
+  const failures = MEASURE_ORDER.map((key) => [key, snap.measurements[key]])
+    .filter(([, m]) => m && m.status === 'done' && (!m.ok || !m.responded))
+    .map(([key, m]) => ({ what: `${PATH_LABELS[key]} (GET ${PATHS[key]})`, reason: m.responded ? `실패 응답 · ${m.code}` : `응답 없음 · ${m.code}`, next: nextStepForCode(m.code) }));
+
+  const busy = !!snap.refreshing;
+  const status = busy ? '「다시 불러오기」와 같은 요청을 보내는 중입니다.'
+    : latest ? `이 PC에서 잰 값을 갱신했습니다(${shortTime(latest)}).${failures.length ? ` 실패 ${failures.length}건은 아래 목록을 확인하세요.` : ''}` : '';
+  return { source, busy, status, nodes: [
+    failures.length ? failureList('실패한 요청', failures, 'dash-measured-failures') : null,
     el('dl', { className: 'kv' }, [
       el('dt', { text: '어디서' }), el('dd', { testid: 'dash-origin', text: `이 브라우저 → http://${snap.origin}${loopback ? '' : ' (127.0.0.1 주소가 아닙니다. 주소를 확인하세요)'}` }),
       el('dt', { text: '마지막 확인' }), el('dd', { testid: 'dash-last-checked', text: latest ? `${formatTime(latest)} (브라우저가 응답을 받은 시각)` : '아직 없음' }),
@@ -350,8 +359,53 @@ function measuredPanel(snap) {
     el('p', { className: 'dash-note', text: '응답 시간은 performance.now() 로 요청 시작부터 응답 본문(JSON)을 다 읽을 때까지 잰 값입니다. 「다시 불러오기」는 5개 요청을 동시에 보내므로 서로 영향을 줄 수 있습니다.' }),
     el('h3', { text: '도움정보 요약' }),
     diagSummary,
+  ] };
+}
+
+// ---------- 실패 목록과 다음에 할 일 ----------
+
+function nextStepForCode(code) {
+  switch (code) {
+    case 'NETWORK_ERROR': return '앱 실행 창(케셰브 서버)이 켜져 있는지 확인한 뒤 「다시 조회」를 누르세요.';
+    case 'TIMEOUT': case 'REQUEST_TIMEOUT': case 'ENGINE_TIMEOUT': return '잠시 뒤 「다시 조회」를 누르세요. 계속되면 PC가 바쁜지 확인하세요.';
+    case 'CANCELLED': case 'REQUEST_CANCELLED': return '새 요청으로 이전 요청이 취소됐습니다. 필요하면 「다시 조회」를 누르세요.';
+    case 'CONTRACT_MISMATCH': case 'INVALID_RESPONSE': case 'ENGINE_RESULT_UNVERIFIED':
+      return '화면과 서버가 같은 버전인지 확인하세요(설치본이면 다시 설치). 그다음 「다시 조회」를 누르세요.';
+    case 'ENGINE_NOT_CONNECTED': return 'SDP 미연결 상태라 받을 자료가 없습니다. SDP 연결 설정은 이 화면에서 하지 않습니다.';
+    case 'HOST_REJECTED': return 'http://127.0.0.1:5189/ 주소로 열었는지 확인하세요.';
+    default: return '「다시 조회」를 누르세요. 계속되면 앱 실행 창의 메시지를 확인하세요.';
+  }
+}
+
+function nextStepForReason(reason) {
+  const text = String(reason || '');
+  if (/^권한 부족/.test(text)) return '관리자 권한 없이는 읽을 수 없는 항목입니다. 이 앱은 권한을 올리지 않으므로 여기서는 읽을 수 없습니다.';
+  if (/시간 초과/.test(text)) return '잠시 뒤 「다시 조회」를 누르세요. 계속되면 PC가 바쁜지 확인하세요.';
+  if (/PowerShell 을 찾을 수 없|Windows 가 아니/.test(text)) return 'Windows PowerShell 5.1 이 있는 Windows 에서만 읽을 수 있습니다.';
+  if (/statfs/.test(text)) return '설치본에 포함된 Node 24.19.0 으로 실행했는지 확인하세요.';
+  if (/드라이브/.test(text)) return '시스템 드라이브가 연결돼 있는지 확인한 뒤 「다시 조회」를 누르세요.';
+  return '「다시 조회」를 누르세요. 계속되면 앱 실행 창의 메시지를 확인하세요.';
+}
+
+// 요청 전체 실패를 목록 항목으로
+function requestFailure(what, resource) {
+  const code = resource && resource.error && typeof resource.error.code === 'string' ? resource.error.code : 'UNKNOWN_ERROR';
+  const message = resource && resource.error && typeof resource.error.message === 'string' ? resource.error.message.slice(0, 200) : '';
+  return { what, reason: `${SOURCES[sourceOf(resource)].label} (${code})${message ? ` · ${message}` : ''}`, next: nextStepForCode(code) };
+}
+
+function failureList(title, items, testid) {
+  return el('section', { className: 'dash-fail', testid, 'aria-label': title }, [
+    el('h3', { text: `${title} (${items.length}건)` }),
+    el('ul', {}, items.map((item) => el('li', {}, el('dl', { className: 'kv' }, [
+      el('dt', { text: '실패한 항목' }), el('dd', { text: item.what }),
+      el('dt', { text: '이유' }), el('dd', { text: item.reason }),
+      el('dt', { text: '다음에 할 일' }), el('dd', { text: item.next }),
+    ])))),
   ]);
 }
+
+const TABLE_HINT = '막대 값은 「표로 보기」에서 글자로 볼 수 있습니다.';
 
 // ---------- 전체 ----------
 
@@ -410,6 +464,7 @@ function pcMetric(def, data) {
     ]));
   }
   if (missing > 0) lines.push(el('p', { className: 'dash-note', text: `확인 불가 표본 ${missing}개는 평균·최고·최저에서 뺐습니다.` }));
+  if (samples.length > 0) lines.push(el('p', { className: 'dash-note', text: TABLE_HINT }));
 
   // 작은 막대: 0~100 % 기준(CPU 사용률, 메모리 사용 비율, 디스크 남은 비율). 못 읽은 표본은 빈 칸 + 글자.
   const bars = samples.length === 0 ? null : el('ol', { className: 'mini-trend', 'aria-label': `${def.name} 최근 표본 ${samples.length}개` },
@@ -439,37 +494,33 @@ function pcMetric(def, data) {
   ]);
 }
 
-function pcPanel(snap, actions) {
+// 틀에 채울 내용: { source, busy, status, nodes }
+function pcContent(snap) {
   const pc = snap.pcStatus;
-  const loading = !!pc && pc.status === 'loading';
-  const button = el('button', { type: 'button', className: 'btn', testid: 'dash-pc-refresh', 'aria-disabled': loading ? 'true' : null,
-    text: loading ? '재는 중…' : '내 PC 상태 새로 재기' });
-  button.addEventListener('click', () => {
-    if (!loading && actions && typeof actions.onPcStatusRefresh === 'function') actions.onPcStatusRefresh();
-  });
-
-  let source, body;
-  if (!pc || pc.status === 'idle') { source = 'pending'; body = [el('p', { className: 'dash-empty', text: '아직 재지 않았습니다.' })]; }
-  else if (loading) { source = 'loading'; body = [el('p', { className: 'dash-empty', text: '재는 중… (CPU 지금 값은 0.5초 동안 잽니다)' })]; }
-  else if (pc.status !== 'ok') {
-    source = sourceOf(pc) === 'disconnected' ? 'disconnected' : 'unverified';
-    body = [el('p', { className: 'dash-empty', 'data-source': source, testid: 'dash-pc-state', text: `값 없음 · ${errorText({ ...pc, meta: { mode: source === 'disconnected' ? 'disconnected' : 'unknown' } })}` })];
-  } else {
-    const d = pc.data;
-    source = combine(PC_METRICS.map((m) => (d.current[m.key].status === 'ok' ? 'measured' : 'unverified')));
-    body = [
+  const busy = !!pc && pc.status === 'loading';
+  if (!pc || pc.status === 'idle') return { source: 'pending', busy, status: '', nodes: [el('p', { className: 'dash-empty', testid: 'dash-pc-state', text: '아직 재지 않았습니다.' })] };
+  if (busy) return { source: 'loading', busy, status: '내 PC 상태를 조회하는 중입니다.', nodes: [el('p', { className: 'dash-empty', testid: 'dash-pc-state', text: '조회 중… (CPU 지금 값은 0.5초 동안 잽니다)' })] };
+  if (pc.status !== 'ok') {
+    // 실패하면 이전 값을 보여 주지 않는다.
+    const source = sourceOf(pc) === 'disconnected' ? 'disconnected' : 'unverified';
+    return { source, busy, status: '내 PC 상태 조회에 실패했습니다. 실패 목록을 확인하세요.', nodes: [
+      failureList('조회 실패', [requestFailure('내 PC 상태 전체 (GET /api/pc-status)', pc)], 'dash-pc-failures'),
+    ] };
+  }
+  const d = pc.data;
+  const failed = PC_METRICS.filter((m) => d.current[m.key].status !== 'ok')
+    .map((m) => ({ what: m.name, reason: d.current[m.key].reason, next: nextStepForReason(d.current[m.key].reason) }));
+  const at = d.current.cpu.measuredAt;
+  return {
+    source: combine(PC_METRICS.map((m) => (d.current[m.key].status === 'ok' ? 'measured' : 'unverified'))),
+    busy,
+    status: `내 PC 상태를 조회했습니다(${shortTime(at)}).${failed.length ? ` 확인 불가 ${failed.length}건은 실패 목록을 확인하세요.` : ''}`,
+    nodes: [
+      failed.length ? failureList('확인 불가 항목', failed, 'dash-pc-failures') : null,
       el('div', { className: 'dash-pc-grid' }, PC_METRICS.map((m) => pcMetric(m, d))),
       d.sampling.running ? null : el('p', { className: 'dash-note', text: '서버의 15초 측정기가 멈춰 있어 추이 표본이 쌓이지 않습니다.' }),
-    ];
-  }
-
-  return el('section', { className: 'dash-panel dash-pc', testid: 'dash-pc-panel', 'data-source': source, 'aria-label': '내 PC 상태(실측)' }, [
-    el('div', { className: 'dash-card-head' }, [el('h2', { text: '내 PC 상태(실측)' }), badge(source, 'dash-pc-panel-source')]),
-    el('p', { className: 'dash-note', text: '이 PC 의 앱 서버가 Node 내장 기능(node:os·node:fs)으로 잰 값입니다. 예제 모드에서도 예시 값이 아니라 실측입니다.' }),
-    el('p', { className: 'dash-note', text: '추이 표본은 서버가 켜져 있는 동안 15초마다 서버 메모리에만 쌓습니다(최대 40개, 약 10분). 파일 저장·외부 전송은 없고, 서버를 끄면 사라집니다. 이 화면은 자동으로 다시 묻지 않습니다.' }),
-    el('div', { className: 'row' }, button),
-    ...body,
-  ]);
+    ],
+  };
 }
 
 // ---------- 이 PC 보안 구성(읽기 전용·실측) — 학생 구현 ----------
@@ -625,63 +676,157 @@ function secSourceOf(d) {
   return combine(ms.map(metricSource));
 }
 
-function secPanel(snap, actions) {
+function secMetricFailures(d) {
+  const items = [
+    ['네트워크 · 어댑터 주소', d.network.interfaces], ['네트워크 · 어댑터 연결 상태·MAC', d.network.adapters],
+    ['네트워크 · 기본 게이트웨이', d.network.gateways], ['네트워크 · DNS 서버', d.network.dns],
+    ['방화벽 · 프로필별 설정', d.firewall.profiles], ['Windows 기록 · System', d.events.system], ['Windows 기록 · Application', d.events.application],
+  ];
+  return items.filter(([, m]) => m.status !== 'ok').map(([what, m]) => ({ what, reason: m.reason, next: nextStepForReason(m.reason) }));
+}
+
+// 이전 결과는 지금 값과 섞이지 않게 따로 표시한다.
+function secPrevious(previous) {
+  return [
+    el('p', { className: 'dash-previous-label', testid: 'dash-sec-previous', text: `이전 결과(읽은 시각 ${formatTime(previous.data.measuredAt)}) · 지금 값 아님` }),
+    el('div', { className: 'dash-sec-previous' }, secBody(previous.data)),
+  ];
+}
+
+function secContent(snap) {
   const sec = snap.pcSecurity;
-  const loading = !!sec && sec.status === 'loading';
+  const busy = !!sec && sec.status === 'loading';
   const previous = sec && sec.previous && sec.previous.status === 'ok' ? sec.previous : null;
-  const button = el('button', { type: 'button', className: 'btn', testid: 'dash-sec-read', 'aria-disabled': loading ? 'true' : null,
-    text: loading ? '읽는 중…' : '이 PC 보안 구성 읽기' });
-  button.addEventListener('click', () => {
-    if (!loading && actions && typeof actions.onPcSecurityRead === 'function') actions.onPcSecurityRead();
-  });
-
-  let source; const body = [];
   if (!sec || sec.status === 'idle') {
-    source = 'pending';
-    body.push(el('p', { className: 'dash-empty', testid: 'dash-sec-state', text: '아직 읽지 않음 · 「이 PC 보안 구성 읽기」를 누르면 읽습니다(몇 초 걸릴 수 있습니다).' }));
-  } else if (sec.status === 'ok') {
-    source = secSourceOf(sec.data);
-    body.push(el('p', { className: 'dash-note', testid: 'dash-sec-measured-at', text: `읽은 시각 ${formatTime(sec.data.measuredAt)}` }), secBody(sec.data));
-  } else {
-    source = loading ? 'loading' : sourceOf(sec) === 'disconnected' ? 'disconnected' : 'unverified';
-    body.push(el('p', { className: 'dash-empty', 'data-source': source, testid: 'dash-sec-state', text: loading
-      ? '읽는 중… PowerShell 읽기 명령 3개를 실행합니다(각 10초 제한).'
-      : `이번 읽기 결과 없음 · ${errorText({ ...sec, meta: { mode: source === 'disconnected' ? 'disconnected' : 'unknown' } })}` }));
-    if (previous) {
-      body.push(el('p', { className: 'dash-note', testid: 'dash-sec-previous', text: `아래는 이전 결과입니다(읽은 시각 ${formatTime(previous.data.measuredAt)}). 지금 값이 아닙니다.` }),
-        el('div', { className: 'dash-sec-previous' }, secBody(previous.data)));
-    }
+    return { source: 'pending', busy, status: '', nodes: [el('p', { className: 'dash-empty', testid: 'dash-sec-state', text: '아직 읽지 않음 · 「이 PC 보안 구성 읽기」를 누르면 읽습니다(몇 초 걸릴 수 있습니다).' })] };
   }
+  if (busy) {
+    return { source: 'loading', busy, status: '이 PC 보안 구성을 조회하는 중입니다.', nodes: [
+      el('p', { className: 'dash-empty', testid: 'dash-sec-state', text: '조회 중… PowerShell 읽기 명령 3개를 실행합니다(각 10초 제한).' }),
+      ...(previous ? secPrevious(previous) : []),
+    ] };
+  }
+  if (sec.status === 'ok') {
+    const failed = secMetricFailures(sec.data);
+    return {
+      source: secSourceOf(sec.data), busy,
+      status: `이 PC 보안 구성을 조회했습니다(${shortTime(sec.data.measuredAt)}).${failed.length ? ` 확인 불가 ${failed.length}건은 실패 목록을 확인하세요.` : ''}`,
+      nodes: [
+        el('p', { className: 'dash-note', testid: 'dash-sec-measured-at', text: `읽은 시각 ${formatTime(sec.data.measuredAt)}` }),
+        failed.length ? failureList('확인 불가 항목', failed, 'dash-sec-failures') : null,
+        secBody(sec.data),
+      ],
+    };
+  }
+  const source = sourceOf(sec) === 'disconnected' ? 'disconnected' : 'unverified';
+  return { source, busy, status: '이 PC 보안 구성 조회에 실패했습니다. 실패 목록을 확인하세요.', nodes: [
+    failureList('조회 실패', [requestFailure('이 PC 보안 구성 전체 (GET /api/pc-security)', sec)], 'dash-sec-failures'),
+    ...(previous ? secPrevious(previous) : []),
+  ] };
+}
 
-  return el('section', { className: 'dash-panel dash-sec', testid: 'dash-sec-panel', 'data-source': source, 'aria-label': '이 PC 보안 구성(읽기 전용·실측)' }, [
-    el('div', { className: 'dash-card-head' }, [el('h2', { text: '이 PC 보안 구성(읽기 전용·실측)' }), badge(source, 'dash-sec-panel-source')]),
-    el('p', { className: 'dash-note', text: '이 PC 에서 일반 사용자 권한의 읽기 명령으로만 읽습니다. 설정을 바꾸지 않고, 관리자 권한을 요청하지 않습니다. 권한이 없어 못 읽은 값은 「확인 불가」와 이유로 표시합니다.' }),
-    el('p', { className: 'dash-note', text: 'SDP 연결과 상관없는 「이 PC 조회」입니다. 예제 모드에서도 예시 값이 아니라 실측입니다. 읽은 값은 저장하거나 외부로 보내지 않고 이 화면에만 보여 줍니다.' }),
-    el('div', { className: 'row' }, button),
-    ...body,
+// ---------- 고정 틀 ----------
+// 틀(제목·버튼·상태 문장)은 한 번만 만들고 내용만 바꾼다. 그래야 버튼 포커스가 남고 상태 문장(aria-live)이 읽힌다.
+
+function createShell({ id, title, buttonLabel, ariaName, intro = [], hint = null }) {
+  const badgeSlot = el('span', { className: 'dash-badge-slot' });
+  const button = el('button', { type: 'button', className: 'btn dash-requery', testid: `${id}-requery` });
+  const status = el('p', { className: 'dash-status', role: 'status', 'aria-live': 'polite', testid: `${id}-status` });
+  const body = el('div', { className: 'dash-shell-body', testid: `${id}-body` });
+  const section = el('section', { className: 'dash-panel dash-shell', id, tabindex: '-1', testid: `${id}-panel`, 'aria-labelledby': `${id}-title` }, [
+    el('div', { className: 'dash-card-head' }, [el('h2', { id: `${id}-title`, text: title }), badgeSlot]),
+    ...intro.map((text) => el('p', { className: 'dash-note', text })),
+    el('div', { className: 'row dash-requery-row' }, [button, hint ? el('p', { className: 'dash-requery-hint', testid: `${id}-hint`, text: hint }) : null]),
+    status,
+    body,
+  ]);
+  const shell = { section, button, busy: false, onPress: null, lastStatus: null, lastBadge: null, label: buttonLabel, ariaName };
+  // 조회 중에는 aria-disabled 로 두고(포커스 유지), 클릭·Enter·Space 를 코드에서 무시한다.
+  button.addEventListener('click', (event) => {
+    if (shell.busy) { event.preventDefault(); return; }
+    if (typeof shell.onPress === 'function') shell.onPress();
+  });
+  button.addEventListener('keydown', (event) => {
+    if (shell.busy && (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar')) event.preventDefault();
+  });
+  return shell;
+}
+
+function updateShell(shell, content, { label, ariaName, onPress }) {
+  shell.busy = !!content.busy;
+  shell.onPress = onPress;
+  const text = shell.busy ? '조회 중…' : label;
+  if (shell.button.textContent !== text) shell.button.textContent = text;
+  shell.button.setAttribute('aria-label', shell.busy ? `${ariaName.replace(/ (다시 조회|읽기)$/, '')} 조회 중` : ariaName);
+  if (shell.busy) shell.button.setAttribute('aria-disabled', 'true'); else shell.button.removeAttribute('aria-disabled');
+  if (shell.busy) shell.section.setAttribute('aria-busy', 'true'); else shell.section.removeAttribute('aria-busy');
+  shell.section.setAttribute('data-source', content.source);
+  if (shell.lastBadge !== content.source) {
+    shell.section.querySelector('.dash-badge-slot').replaceChildren(badge(content.source, `${shell.section.id}-source`));
+    shell.lastBadge = content.source;
+  }
+  // 같은 문장을 다시 넣지 않는다(바뀔 때만 화면 낭독기가 읽게).
+  if (content.status !== shell.lastStatus) { shell.lastStatus = content.status; shell.section.querySelector('.dash-status').textContent = content.status; }
+  shell.section.querySelector('.dash-shell-body').replaceChildren(...content.nodes.filter(Boolean));
+}
+
+const built = new WeakMap();
+
+function skipLinks() {
+  const link = (href, text) => {
+    const a = el('a', { href: `#${href}`, className: 'dash-skip-link', text });
+    a.addEventListener('click', (event) => {
+      const target = document.getElementById(href);
+      if (!target) return;
+      event.preventDefault();
+      target.focus();
+      if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'start' });
+    });
+    return el('li', {}, a);
+  };
+  return el('nav', { className: 'dash-skip', 'aria-label': '대시보드 바로 가기', testid: 'dash-skip' }, [
+    el('ul', {}, [link('dash-cards', '상태 카드 4개로 가기'), link('dash-pc', '내 PC 상태로 가기'), link('dash-sec', '이 PC 보안 구성으로 가기')]),
   ]);
 }
 
-const REFOCUS_IDS = ['dash-pc-refresh', 'dash-sec-read'];
+function build(target) {
+  const refreshLine = el('p', { className: 'dash-refresh', testid: 'dash-refresh-state' });
+  const cards = el('div', { className: 'dash-cards', id: 'dash-cards', tabindex: '-1', role: 'region', 'aria-label': '상태 카드 4개' });
+  const pc = createShell({
+    id: 'dash-pc', title: '내 PC 상태(실측)', buttonLabel: '다시 조회', ariaName: '내 PC 상태 다시 조회',
+    intro: ['이 PC 의 앱 서버가 Node 내장 기능(node:os·node:fs)으로 잰 값입니다. 예제 모드에서도 예시 값이 아니라 실측입니다.',
+      '추이 표본은 서버가 켜져 있는 동안 15초마다 서버 메모리에만 쌓습니다(최대 40개, 약 10분). 파일 저장·외부 전송은 없고, 서버를 끄면 사라집니다. 이 화면은 자동으로 다시 묻지 않습니다.'],
+  });
+  const sec = createShell({
+    id: 'dash-sec', title: '이 PC 보안 구성(읽기 전용·실측)', buttonLabel: '이 PC 보안 구성 읽기', ariaName: '이 PC 보안 구성 읽기',
+    intro: ['이 PC 에서 일반 사용자 권한의 읽기 명령으로만 읽습니다. 설정을 바꾸지 않고, 관리자 권한을 요청하지 않습니다. 권한이 없어 못 읽은 값은 「확인 불가」와 이유로 표시합니다.',
+      'SDP 연결과 상관없는 「이 PC 조회」입니다. 예제 모드에서도 예시 값이 아니라 실측입니다. 읽은 값은 저장하거나 외부로 보내지 않고 이 화면에만 보여 줍니다.'],
+  });
+  const lower = el('div', { className: 'dash-lower' });
+  const measured = createShell({
+    id: 'dash-measured', title: '이 PC에서 잰 값', buttonLabel: '다시 조회', ariaName: '이 PC에서 잰 값 다시 조회',
+    hint: '「다시 불러오기」와 같습니다. 업무 앱 판정 결과와 진행 중인 AI 설명·조치 화면이 초기화됩니다(AI 연결 점검·설치 패키지 조회 결과도 함께 지워집니다).',
+  });
+  target.replaceChildren(skipLinks(), refreshLine, legend(), cards, pc.section, sec.section, lower, measured.section);
+  const parts = { refreshLine, cards, pc, sec, lower, measured };
+  built.set(target, parts);
+  return parts;
+}
 
 export function renderDashboard(target, snap, actions = {}) {
-  // 다시 그려도 패널 버튼의 키보드 포커스를 유지한다.
-  const active = typeof document !== 'undefined' ? document.activeElement : null;
-  const refocusId = active && target.contains && target.contains(active) && active.dataset && REFOCUS_IDS.includes(active.dataset.testid) ? active.dataset.testid : null;
-  const refocus = refocusId !== null;
-  target.replaceChildren(
-    el('p', { className: 'dash-refresh', testid: 'dash-refresh-state', text: snap.refreshing
-      ? '다시 불러오는 중… 값이 하나씩 바뀝니다.'
-      : '값은 「다시 불러오기」를 누를 때만 갱신됩니다. 자동 새로고침은 없습니다.' }),
-    legend(),
-    el('div', { className: 'dash-cards' }, [engineCard(snap), identityCard(snap), appsCard(snap), aiCard(snap)]),
-    el('div', { className: 'dash-lower' }, [trendPanel(snap), recentPanel(snap)]),
-    pcPanel(snap, actions),
-    secPanel(snap, actions),
-    measuredPanel(snap),
-  );
-  if (refocus) {
-    const button = target.querySelector(`[data-testid="${refocusId}"]`);
-    if (button) button.focus();
-  }
+  // 다른 글(오류 안내 등)이 틀을 덮었으면 틀을 다시 만든다.
+  let parts = built.get(target);
+  if (!parts || parts.cards.parentNode !== target) parts = build(target);
+  const refreshText = snap.refreshing ? '다시 불러오는 중… 값이 하나씩 바뀝니다.' : '값은 「다시 불러오기」·「다시 조회」를 누를 때만 갱신됩니다. 자동 새로고침은 없습니다.';
+  if (parts.refreshLine.textContent !== refreshText) parts.refreshLine.textContent = refreshText;
+  parts.cards.replaceChildren(engineCard(snap), identityCard(snap), appsCard(snap), aiCard(snap));
+
+  const secData = snap.pcSecurity;
+  const secReadOnce = !!secData && (secData.status === 'ok' || !!secData.previous || secData.status === 'error');
+  updateShell(parts.pc, pcContent(snap), { label: '다시 조회', ariaName: '내 PC 상태 다시 조회', onPress: actions.onPcStatusRefresh });
+  updateShell(parts.sec, secContent(snap), {
+    label: secReadOnce ? '다시 조회' : '이 PC 보안 구성 읽기', ariaName: secReadOnce ? '이 PC 보안 구성 다시 조회' : '이 PC 보안 구성 읽기', onPress: actions.onPcSecurityRead,
+  });
+  parts.lower.replaceChildren(trendPanel(snap), recentPanel(snap));
+  updateShell(parts.measured, measuredPanel(snap), { label: '다시 조회', ariaName: '이 PC에서 잰 값 다시 조회', onPress: actions.onRemeasure });
 }

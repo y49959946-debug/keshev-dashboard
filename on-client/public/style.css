@@ -309,3 +309,27 @@ main:focus { outline: none; }
 .sec-critical { background: repeating-linear-gradient(45deg, #7a1a12 0 3px, var(--deny) 3px 6px); }
 .sec-error { background: var(--deny); }
 .sec-warning { background: var(--challenge); }
+
+/* 화면 다듬기: 건너뛰기 링크, 포커스 표시, 다시 조회·대기 표시, 실패 목록 */
+.dash-skip ul { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.dash-skip-link { display: inline-block; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--accent); font-size: 0.85rem; text-decoration: none; }
+.dash-skip-link:hover { border-color: var(--accent); }
+/* 포커스 표시는 상자에 잘리지 않도록 outline 으로도 준다. */
+.dashboard a:focus-visible, .dashboard button:focus-visible, .dashboard summary:focus-visible, #nav [role="tab"]:focus-visible, .btn:focus-visible {
+  outline: 3px solid #f5b400; outline-offset: 2px;
+}
+.dash-shell:focus, .dash-cards:focus { outline: 3px solid #f5b400; outline-offset: 4px; }
+.dash-shell:focus:not(:focus-visible), .dash-cards:focus:not(:focus-visible) { outline: none; }
+.dashboard summary { cursor: pointer; }
+.dash-shell { margin-bottom: 16px; }
+.dash-requery-row { align-items: center; margin: 8px 0 4px; }
+.dash-requery-hint { margin: 0; flex: 1 1 260px; color: var(--muted); font-size: 0.8rem; }
+.btn[aria-disabled="true"] { cursor: progress; opacity: 0.6; border-style: dashed; }
+.dash-status { margin: 4px 0 10px; font-size: 0.85rem; color: var(--muted); min-height: 1.2em; }
+.dash-shell[aria-busy="true"] .dash-shell-body { opacity: 0.75; }
+.dash-fail { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--deny); border-left-width: 4px; border-radius: var(--radius); background: var(--deny-soft); }
+.dash-fail h3 { margin: 0 0 6px; font-size: 0.95rem; color: var(--deny); }
+.dash-fail ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.dash-fail li + li { border-top: 1px dashed var(--deny); padding-top: 8px; }
+.dash-fail .kv { grid-template-columns: 100px 1fr; font-size: 0.85rem; }
+.dash-previous-label { margin: 12px 0 6px; padding: 4px 8px; display: inline-block; border: 1px dashed var(--unknown); border-radius: var(--radius); color: var(--unknown); font-weight: 600; font-size: 0.85rem; }

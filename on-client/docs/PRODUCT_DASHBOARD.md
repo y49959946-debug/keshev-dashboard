@@ -240,3 +240,87 @@ npm run check
 4. 「다시 불러오기」 → 이 패널의 결과와 읽은 시각은 그대로입니다. 「이 PC에서 잰 값」 표의 `/api/pc-security` 줄도 바뀌지 않습니다.
 5. `-Demo`로 다시 실행 → 카드 ①은 「예시 값」(SDP 아님·예제 엔진)이고, 이 패널을 읽으면 계속 「실측」입니다.
 6. 기존 「보호 현황」「업무 앱」「보안 기록」 화면과 학생 함수 표시가 그대로인지 봅니다.
+
+---
+
+# 화면 다듬기 (핵심 기능 순서, 다시 조회, 실패 목록, 키보드)
+
+## 학생 영역(student/extension.mjs)에서 하지 않은 이유
+
+이번 변경은 모두 제공 화면(`public/dashboard.mjs`·`app.js`·`style.css`)에서 했습니다. 학생 함수 8개(`renderIdentity`·`renderDecision`·`renderEvents`·`renderStatus`·`renderVulnerabilities`·`renderAiConnection`·`renderExplanation`·`renderAction`)와 13~20단계 표시는 바꾸지 않았습니다. 학생 영역에서 할 수 없는 이유는 셋입니다.
+
+1. **관제 대시보드에는 학생 칸이 없습니다.** 제공 화면이 학생 결과를 넣는 칸(STUDENT_SLOTS)은 보호 현황·업무 앱·보안 기록 화면의 8칸뿐입니다. 학생 함수에 넘기는 값에도 내 PC 상태·보안 구성·측정값이 없습니다.
+2. **`createStudentView`가 `api`를 받지 않습니다.** 제공 화면은 `createStudentView({ api, onChange })`로 부르지만, 학생 코드는 `createStudentView()`로 정의돼 있어 조회 기능을 쓰지 않습니다.
+3. **STUDENT_GET_PATHS 제한이 있습니다.** 학생이 쓸 수 있는 조회는 `/api/me`·`/api/apps`·`/api/events`·`/api/devices`·`/api/sessions`·`/api/vulnerabilities`뿐입니다. `/api/pc-status`·`/api/pc-security`는 없습니다. 이 목록을 넓히면 학생 코드가 PowerShell 읽기(`/api/pc-security`)를 부를 수 있게 되므로 넓히지 않았습니다.
+
+`student/appearance.json`은 없고, 서버 files 목록과 app.js에도 읽는 코드가 없습니다. **현재 시작 틀은 appearance.json을 지원하지 않습니다.**
+
+## 배치 (위→아래, Tab 순서도 같음)
+
+1. 바로 가기 링크: 「상태 카드 4개로 가기」「내 PC 상태로 가기」「이 PC 보안 구성으로 가기」
+2. 갱신 안내, 출처 배지 읽는 법
+3. 상태 카드 4개(카드 ① "SDP 엔진 연결"에 SDP 미연결 구분)
+4. 내 PC 상태(실측)
+5. 이 PC 보안 구성(읽기 전용·실측)
+6. 기록 추이 · 최근 기록
+7. 이 PC에서 잰 값
+
+패널 틀(제목·버튼·상태 문장)은 한 번만 만들고, 이후에는 내용만 바꿉니다. 그래서 다시 그려도 버튼 포커스와 「출처 배지 읽는 법」의 펼침 상태가 그대로 남습니다. 오류 안내 등이 틀을 덮으면 다음 그리기 때 틀을 다시 만듭니다.
+
+## 「다시 조회」와 대기 표시
+
+| 패널 | 버튼 | 보내는 요청 |
+|---|---|---|
+| 내 PC 상태 | 다시 조회 | `/api/pc-status` 1건 |
+| 이 PC 보안 구성 | 처음 「이 PC 보안 구성 읽기」, 한 번 읽은 뒤 「다시 조회」 | `/api/pc-security` 1건 |
+| 이 PC에서 잰 값 | 다시 조회 | 「다시 불러오기」와 같은 요청(GET 5개 + 내 PC 상태). 보안 구성·도움정보는 다시 부르지 않음 |
+
+- 「이 PC에서 잰 값」 버튼 옆에는 "「다시 불러오기」와 같습니다. 업무 앱 판정 결과와 진행 중인 AI 설명·조치 화면이 초기화됩니다(AI 연결 점검·설치 패키지 조회 결과도 함께 지워집니다)."가 글자로 적혀 있습니다. 이유는 `loadAll()`이 `cancelInteractive()`(판정·AI 연결 점검·AI 설명·조치)와 `clearVulnerabilities()`를 부르기 때문입니다.
+- **조회 중**에는 다음과 같이 바뀝니다.
+  - 버튼 글자가 "조회 중…"이 되고 `aria-disabled="true"`, 점선 테두리로 흐리게 보입니다.
+  - `disabled`를 쓰지 않으므로 포커스는 버튼에 그대로 남습니다. 대신 코드가 클릭·Enter·Space를 무시합니다.
+  - 패널에 `aria-busy="true"`가 붙습니다.
+  - 패널마다 있는 상태 문장(`role="status"`, `aria-live="polite"`)이 "…를 조회하는 중입니다." → "…를 조회했습니다(시각)."로 바뀝니다. 같은 문장은 다시 넣지 않아 반복해서 읽히지 않습니다.
+- 끝나면 `aria-disabled`·`aria-busy`를 지우고 버튼 글자를 되돌립니다.
+- 같은 이름의 버튼이 여럿이라, 화면 낭독기용 이름은 "내 PC 상태 다시 조회"·"이 PC에서 잰 값 다시 조회"처럼 붙어 있습니다.
+- 자동·주기 조회는 없습니다.
+
+## 실패 화면
+
+- 실패하면 패널 안에 「실패한 항목 / 이유 / 다음에 할 일」 목록이 나옵니다. 요청 전체가 실패한 경우와, 값 일부가 「확인 불가」인 경우 둘 다 해당합니다.
+- 다음에 할 일의 예:
+
+| 상황 | 다음에 할 일 |
+|---|---|
+| 서버에 닿지 못함 | 앱 실행 창(케셰브 서버)이 켜져 있는지 확인한 뒤 「다시 조회」 |
+| 시간 초과 | 잠시 뒤 「다시 조회」, 계속되면 PC가 바쁜지 확인 |
+| 형식 불일치 | 화면과 서버가 같은 버전인지 확인(설치본이면 다시 설치) |
+| 권한 부족 | 관리자 권한 없이는 읽을 수 없는 항목이며, 이 앱은 권한을 올리지 않음 |
+| SDP 미연결(`ENGINE_NOT_CONNECTED`) | 받을 자료가 없으며, SDP 연결 설정은 이 화면에서 하지 않음 |
+
+- 내 PC 상태는 실패하면 이전 값을 보여 주지 않습니다.
+- 이 PC 보안 구성은 이전 결과를 "이전 결과(읽은 시각 …) · 지금 값 아님" 표시와 함께 따로 둡니다.
+- 예시 값을 지금 값처럼 보여 주지 않습니다. 실측·예시 값 구분(배지·잰 시각·단위)은 그대로입니다.
+
+## 키보드만으로 쓰기
+
+- Tab 순서는 화면 순서와 같습니다(CSS로 순서를 바꾸지 않음).
+- 바로 가기 링크를 누르면 해당 영역(`tabindex="-1"`)으로 포커스가 옮겨 갑니다.
+- 버튼·링크·「표로 보기」(`summary`)·메뉴 탭에는 `:focus-visible` 노란 외곽선(3px)이 보입니다.
+- 막대에 마우스를 올려야만 보이던 값은 「표로 보기」에 글자로 모두 있고, 막대 옆에 "막대 값은 「표로 보기」에서 글자로 볼 수 있습니다."라고 적었습니다. 출처 배지의 설명은 「출처 배지 읽는 법」에 글자로 있습니다.
+
+## 설치본 반영 확인
+
+저장소 파일을 고쳐도 설치본에는 저절로 들어가지 않습니다. 다시 빌드하고 다시 설치해야 합니다. `build-package.ps1`은 이번에 고친 `public\app.js`·`dashboard.mjs`·`style.css`와 `docs\PRODUCT_DASHBOARD.md`를 고정 목록으로 담습니다.
+
+```powershell
+# 1) 빌드 결과 목록과 저장소 대조 (D:\keshev-dashboard)
+$list = Get-Content .\dist\Keshev\PACKAGE-FILES.txt | Where-Object { $_ -match '^([0-9a-f]{64})\s+\d+\s+app\(.+)$' } | ForEach-Object { [pscustomobject]@{ Hash = $Matches[1]; Path = $Matches[2] } }
+$list | ForEach-Object { $r = (Get-FileHash ".\on-client\$($_.Path)" -Algorithm SHA256).Hash.ToLower(); '{0,-6} {1}' -f $(if ($r -eq $_.Hash) { 'same' } else { 'DIFF' }), $_.Path }
+
+# 2) 설치 폴더와 저장소 대조
+$inst = Join-Path $env:LOCALAPPDATA 'Programs\Keshev\app'
+'public\app.js','public\dashboard.mjs','public\style.css','public\index.html','src\server.mjs','src\pc-status.mjs','src\pc-security.mjs','student\extension.mjs','docs\PRODUCT_DASHBOARD.md' | ForEach-Object {
+  $a = (Get-FileHash ".\on-client\$_" -Algorithm SHA256).Hash; $b = if (Test-Path "$inst\$_") { (Get-FileHash "$inst\$_" -Algorithm SHA256).Hash } else { 'missing' }
+  '{0,-8} {1}' -f $(if ($a -eq $b) { 'same' } elseif ($b -eq 'missing') { 'missing' } else { 'DIFF' }), $_ }
+```
